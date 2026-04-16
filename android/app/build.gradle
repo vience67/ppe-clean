@@ -1,45 +1,37 @@
 plugins {
     id "com.android.application"
     id "kotlin-android"
-    // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id "dev.flutter.flutter-gradle-plugin"
 }
 
 android {
-    namespace = "com.example.ppe_clean"
-    compileSdk = 36
-    ndkVersion = "25.1.8937393"
-
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
-
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_1_8
-    }
+    namespace "com.example.ppe_clean"
+    compileSdk 36
 
     defaultConfig {
-        applicationId = "com.example.ppe_clean"
-        // Замени flutter.minSdkVersion на конкретное число
-        minSdk = 21
-        targetSdk = 34
-        compileSdk = 36
-        ndkVersion = flutter.ndkVersion
-        
-        // 🔧 Жёстко задаём версию вместо flutter.versionCode
+        applicationId "com.example.ppe_clean"
+        minSdk 21
+        targetSdk 34
         versionCode 1
-        versionName "1.0.0"
-    }
+        versionName "1.0"
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.debug
+            signingConfig signingConfigs.debug
         }
+    }
+    
+    // 🔧 Важно для tflite_flutter
+    lint {
+        disable 'InvalidPackage'
     }
 }
 
 flutter {
-    source = "../.."
+    source "../.."
+}
+
+dependencies {
+    // Пусто, но блок должен быть
 }
