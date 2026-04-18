@@ -39,33 +39,41 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void initState() { super.initState(); _init(); }
 
   Future<void> _init() async {
-    _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
-    await _controller.initialize();
-    _labels = (await rootBundle.loadString('assets/labels.txt'))
-        .split('\n').where((s) => s.trim().isNotEmpty).toList();
-    _interpreter = await Interpreter.fromAsset('assets/best.tflite');
-    _isReady = true;
-    await _controller.startImageStream(_processFrame);
-    if (mounted) setState(() {});
+    try {
+      _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
+      await _controller.initialize();
+      
+      _labels = (await rootBundle.loadString('assets/labels.txt'))
+          .split('\n').where((s) => s.trim().isNotEmpty).toList();
+      print("✅ Labels loaded: ${_labels.length} -> ${_labels.first}");
+
+      _interpreter = await Interpreter.fromAsset('assets/best.tflite');
+      print("📐 Input shape: ${_interpreter.getInputTensor(0).shape}");
+      print("📐 Output shape: ${_interpreter.getOutputTensor(0).shape}");
+      
+      _isReady = true;
+      await _controller.startImageStream(_processFrame);
+      if (mounted) setState(() {});
+    } catch (e) {
+      print(" INIT ERROR: $e");
+    }
   }
 
   void _processFrame(CameraImage image) {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
     Future.delayed(const Duration(milliseconds: 200), () => _isProcessing = false);
-    try {
-      final buf = _yuv420ToUint8(image);
-      final decoded = img.decodeImage(buf)!;
-      final resized = img.copyResize(decoded, width: _inputSize, height: _inputSize, interpolation: img.Interpolation.nearest);
-      final input = _imageToFloat32(resized);
-      
-      // 🔧 ИСПРАВЛЕНИЕ: Интерпретатору нужен вход и выход
-      final output = List.filled(1 * 84 * 8400, 0.0);
-      _interpreter.run(input, output);
-      
-      _parseYOLO(output);
-      if (mounted) setState(() {});
-    } catch (_) {}
+
+    // ❌ УБРАЛИ try/catch, чтобы видеть ошибки в консоли
+    final buf = _yuv420ToUint8(image);
+    final decoded = img.decodeImage(buf)!;
+    final resized = img.copyResize(decoded, width: _inputSize, height: _inputSize, interpolation: img.Interpolation.nearest);
+    final input = _imageToFloat32(resized);
+    
+    final output = List.filled(1 * 84 * 8400, 0.0);
+    _interpreter.run(input, output);
+    _parseYOLO(output);
+    if (mounted) setState(() {});
   }
 
   Uint8List _yuv420ToUint8(CameraImage image) {
