@@ -33,7 +33,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   List<String> _detections = [];
   bool _isReady = false, _isProcessing = false;
   final int _inputSize = 320;
-  final double _confThreshold = 0.5;
+  final double _confThreshold = 0.1;
 
   @override
   void initState() { super.initState(); _init(); }
