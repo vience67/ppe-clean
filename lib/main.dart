@@ -100,8 +100,26 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return buf;
   }
 
-  void _parseYOLO(List<double> output) {
+    void _parseYOLO(List<double> output) {
     _detections = [];
+    
+    // 🔍 ПОКАЗЫВАЕМ СЫРОЙ ВЫВОД (первые 20 значений)
+    String debug = "Output[0-19]: ";
+    for (int i = 0; i < 20 && i < output.length; i++) {
+      debug += "${output[i].toStringAsFixed(3)} ";
+    }
+    _detections.add(debug);
+    
+    // 🔍 ПОКАЗЫВАЕМ МАКСИМУМ уверенности
+    double maxConf = 0;
+    int maxIdx = -1;
+    for (int i = 0; i < 8400; i++) {
+      final conf = output[i * 84 + 4];
+      if (conf > maxConf) { maxConf = conf; maxIdx = i; }
+    }
+    _detections.add("Max conf: ${maxConf.toStringAsFixed(3)} at box #$maxIdx");
+    
+    // 🔍 СТАРЫЙ ПАРСИНГ (оставляем на потом)
     for (int i = 0; i < 8400; i++) {
       final conf = output[i * 84 + 4];
       if (conf > _confThreshold) {
@@ -113,6 +131,8 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _detections.add('${_labels[maxCls]}: ${(conf * 100).toInt()}%');
       }
     }
+    
+    if (mounted) setState(() {});
   }
 
   @override
