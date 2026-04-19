@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace "com.example.ppe_clean"
-    compileSdk 34
+    compileSdk 35
 
     defaultConfig {
         applicationId "com.example.ppe_clean"
