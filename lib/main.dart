@@ -97,18 +97,21 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
 
-    // 🔑 Запускаем в фоне, чтобы не блокировать поток камеры
     Future(() {
       try {
         final input = _cameraImageToFloat32(image);
         
         // Размер выхода: Batch(1) * Features(8) * Anchors(2100)
         final int outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
-        final output = List.filled(outputSize, 0.0);
         
+        // 🔧 ИСПОЛЬЗУЕМ Float32List ДЛЯ ВЫХОДА (как и для входа)
+        final output = Float32List(outputSize);
+        
+        // 🔧 ЯВНАЯ ИНИЦИАЛИЗАЦИЯ (иногда помогает избежать Bad State)
+        _interpreter.allocateTensors();
         _interpreter.run(input, output);
         
-        // 🔍 Выводим первые 10 чисел на экран, чтобы понять, жива ли модель
+        // Выводим первые 10 чисел
         String raw = "Raw[0-9]: ";
         for(int i=0; i<10 && i<output.length; i++) {
            raw += "${output[i].toStringAsFixed(2)} ";
@@ -118,9 +121,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _parseYOLO(output);
         
       } catch (e, st) {
-        // 🔑 Если ошибка, пишем её КРУПНО на экран
-        _status = "❌ CRASH: $e";
-        _debugRawOutput = st.toString().substring(0, 100);
+        _status = "❌ TFLite Crash: $e";
+        _debugRawOutput = st.toString().substring(0, 150);
+        // 🔧 Останавливаем поток, чтобы не спамить ошибками
+        _controller.stopImageStream();
+        _isReady = false;
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
