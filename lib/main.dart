@@ -36,64 +36,82 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   String _status = "Initializing...";
   bool _isReady = false;
   bool _isProcessing = false;
-  bool _isStreaming = false;
+  bool _streamStarted = false; // 🔑 Флаг, чтобы не запустить дважды
   final int _inputSize = 320;
   final double _confThreshold = 0.1;
 
   @override
-  void initState() { super.initState(); _init(); }
+  void initState() {
+    super.initState();
+    _initCamera();
+  }
 
-  Future<void> _init() async {
+  Future<void> _initCamera() async {
     try {
-      _status = "Starting camera...";
-      _controller = CameraController(cameras[0], ResolutionPreset.low, enableAudio: false);
+      _status = "Camera init...";
+      if (mounted) setState(() {});
+
+      // 🔑 Используем MEDIUM (низкое разрешение часто вызывает краш)
+      _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
       await _controller.initialize();
 
-      _status = "Loading assets...";
+      _status = "Loading model...";
+      if (mounted) setState(() {});
+
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
       
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
       _isReady = true;
-      if (mounted) setState(() {});
 
-      // Ждём отрисовки поверхности камеры
-      await Future.delayed(const Duration(milliseconds: 800));
-
-      if (mounted && !_isStreaming && _controller.value.isInitialized) {
-        _status = "Starting stream...";
-        _isStreaming = true;
-        await _controller.startImageStream(_processFrame);
-        _status = "📷 Stream Active";
-        if (mounted) setState(() {});
-      }
+      // 🔑 Запускаем поток ТОЛЬКО после того, как виджет отрисовался
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_streamStarted && _controller.value.isInitialized) {
+          _startStream();
+        }
+      });
+      
     } catch (e, st) {
-      _status = "❌ Init Failed: $e";
-      _detections = [st.toString().split('\n').first];
+      _status = "❌ Error: $e";
       if (mounted) setState(() {});
     }
   }
 
-  void _processFrame(CameraImage image) {
-    if (!_isReady || _isProcessing || !_isStreaming) return;
-    _isProcessing = true;
-    _status = "🔄 Inference...";
+  void _startStream() {
+    try {
+      _streamStarted = true;
+      _status = "Stream starting...";
+      
+      _controller.startImageStream((CameraImage image) {
+        if (!_isReady || _isProcessing) return;
+        _isProcessing = true;
+        _status = "🔄 Detecting...";
 
-    Future(() {
-      try {
-        final input = _cameraImageToFloat32(image);
-        final output = List.filled(1 * 84 * 8400, 0.0);
-        _interpreter.run(input, output);
-        _parseYOLO(output);
-        _status = "✅ Inference OK";
-      } catch (e, st) {
-        _detections = ["❌ Error: $e", st.toString().split('\n').first];
-        _status = "⛔ Crash";
-      } finally {
-        _isProcessing = false;
-        if (mounted) setState(() {});
-      }
-    });
+        // Асинхронная обработка, чтобы не блокировать поток камеры
+        Future(() {
+          try {
+            final input = _cameraImageToFloat32(image);
+            final output = List.filled(1 * 84 * 8400, 0.0);
+            _interpreter.run(input, output);
+            _parseYOLO(output);
+            _status = "✅ OK";
+          } catch (e, st) {
+            _detections = ["⚠️ $e"];
+            _status = "⛔ Error";
+          } finally {
+            _isProcessing = false;
+            if (mounted) setState(() {});
+          }
+        });
+      });
+      
+      _status = "📷 Camera Active";
+      if (mounted) setState(() {});
+      
+    } catch (e) {
+      _status = "❌ Stream failed: $e";
+      if (mounted) setState(() {});
+    }
   }
 
   Float32List _cameraImageToFloat32(CameraImage image) {
@@ -137,9 +155,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _parseYOLO(List<double> output) {
     _detections = [];
     
-    String debug = "Raw[0-19]: ";
-    for (int i = 0; i < 20 && i < output.length; i++) {
-      debug += "${output[i].toStringAsFixed(3)} ";
+    String debug = "Raw[0-5]: ";
+    for (int i = 0; i < 5 && i < output.length; i++) {
+      debug += "${output[i].toStringAsFixed(2)} ";
     }
     _detections.add(debug);
     
@@ -168,11 +186,14 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (!_controller.value.isInitialized) {
-      return Scaffold(body: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        CircularProgressIndicator(), SizedBox(height: 16), Text(_status)
-      ])));
+    // Если камера не готова, показываем загрузку
+    if (_controller == null || !_controller.value.isInitialized) {
+      return Scaffold(body: Center(child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [CircularProgressIndicator(), SizedBox(height: 20), Text(_status)]
+      )));
     }
+    
     return Scaffold(
       body: Stack(children: [
         CameraPreview(_controller),
@@ -197,7 +218,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   @override
   void dispose() {
-    _isStreaming = false;
+    _streamStarted = false;
     _controller.dispose();
     _interpreter.close();
     super.dispose();
