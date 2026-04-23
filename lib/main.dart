@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:typed_data';
-import 'dart:async';
 import 'package:flutter/services.dart';
 
 late List<CameraDescription> cameras;
@@ -43,9 +42,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   int _numClasses = 3;
   int _numAnchors = 2100;
-  
-  // 🔑 Блокировка для предотвращения параллельных вызовов
-  final Completer<void> _lock = Completer<void>()..complete();
 
   @override
   void initState() {
@@ -67,7 +63,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
       
-      // Загружаем модель БЕЗ allocateTensors
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
       
       final outShape = _interpreter.getOutputTensor(0).shape;
@@ -99,21 +94,18 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   }
 
   void _processFrame(CameraImage image) {
+    // 🔑 Простая проверка без блокировок
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
 
-    // 🔑 Асинхронная обработка с блокировкой
-    Future(() async {
+    // 🔑 Обрабатываем кадр в фоне, но без Completer
+    Future(() {
       try {
-        // Ждем, пока предыдущий кадр обработается
-        await _lock;
-        _lock.complete(); // Сбрасываем блокировку для следующего кадра
-        
         final input = _cameraImageToFloat32(image);
         final int outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
         final output = Float32List(outputSize);
         
-        // 🔥 ЗАПУСК БЕЗ allocateTensors
+        // 🔥 Просто run(), без allocateTensors
         _interpreter.run(input, output);
         
         String raw = "Raw[0-9]: ";
@@ -125,10 +117,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _parseYOLO(output);
         
       } catch (e, st) {
-        _status = "❌ TFLite Crash: $e";
+        _status = "❌ TFLite: $e";
         _debugRawOutput = st.toString().substring(0, 150);
-        _controller.stopImageStream();
-        _isReady = false;
+        // 🔑 Не останавливаем поток, просто пропускаем кадр
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
