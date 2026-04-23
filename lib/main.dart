@@ -43,17 +43,17 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   // Параметры модели
   int _numClasses = 3;
   int _numAnchors = 2100;
-  bool _outputTransposed = true; // [1, 8, 2100]
+  bool _outputTransposed = true;
   int _inputTensorSize = 0;
+  
+  // 🔥 Флаг и защита для allocateTensors
+  bool _tensorsAllocated = false;
 
   @override
   void initState() {
     super.initState();
     _init();
   }
-
-  bool _tensorsAllocated = false;
-  final Object _lock = Object();
 
   Future<void> _init() async {
     try {
@@ -90,7 +90,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
 
-      // 🔥 Пробуем выделить память С ЗАЩИТОЙ
+      // 🔥 Пробуем выделить память
       try {
         _interpreter.allocateTensors();
         _tensorsAllocated = true;
@@ -129,19 +129,20 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     }
   }
 
+  // 🔥 ЕДИНСТВЕННЫЙ _processFrame
   void _processFrame(CameraImage image) {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
 
     Future(() {
       try {
-        // 🔥 Проверяем, выделена ли память
+        // 🔥 Проверяем/выделяем память при необходимости
         if (!_tensorsAllocated) {
           try {
             _interpreter.allocateTensors();
             _tensorsAllocated = true;
           } catch (e) {
-            throw Exception("Cannot allocate: $e");
+            throw Exception("Cannot allocate tensors: $e");
           }
         }
 
@@ -153,46 +154,13 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         
         final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
         
-        // 🔥 Запускаем с блокировкой
-        lock: {
-          _interpreter.run(input, output);
-        }
-        
-        _parseYOLO(output);
-        
-      } catch (e, st) {
-        _status = "❌ Run: $e";
-        _debugInfo = st.toString().substring(0, 150);
-        // 🔥 Сбрасываем флаг при ошибке
-        _tensorsAllocated = false;
-      } finally {
-        _isProcessing = false;
-        if (mounted) setState(() {});
-      }
-    });
-  }
-
-  void _processFrame(CameraImage image) {
-    if (!_isReady || _isProcessing) return;
-    _isProcessing = true;
-
-    Future(() {
-      try {
-        final input = _cameraImageToFloat32(image);
-        
-        if (input.length != _inputTensorSize) {
-          throw Exception("Size: ${input.length} != $_inputTensorSize");
-        }
-        
-        final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
-        
-        // 🔥 run() сам вызовет allocateTensors при необходимости
         _interpreter.run(input, output);
         _parseYOLO(output);
         
       } catch (e, st) {
         _status = "❌ Run: $e";
         _debugInfo = st.toString().substring(0, 150);
+        _tensorsAllocated = false; // Сброс при ошибке
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
@@ -200,7 +168,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     });
   }
 
-  // Конвертация кадра в Float32List
   Float32List _cameraImageToFloat32(CameraImage image) {
     final int target = _inputSize;
     final Float32List result = Float32List(target * target * 3);
@@ -223,13 +190,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         final int yVal = y[yOff + sx];
         final int uVal = u[uvIdx];
         final int vVal = v[uvIdx];
-        
-        // YUV to RGB
         int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
         int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).round().clamp(0, 255);
         int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
-        
-        // Нормализация [0, 1]
         result[idx++] = r / 255.0;
         result[idx++] = g / 255.0;
         result[idx++] = b / 255.0;
@@ -238,7 +201,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return result;
   }
 
-  // Парсинг вывода YOLOv5 (транспонированный)
   void _parseYOLO(List<double> output) {
     List<String> newDetections = [];
     
@@ -251,7 +213,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     double maxConf = 0;
 
     for (int j = 0; j < _numAnchors; j++) {
-      // Индекс уверенности объекта (feature #4)
       final int objIdx = _outputTransposed 
           ? 4 * _numAnchors + j 
           : j * (4 + 1 + _numClasses) + 4;
