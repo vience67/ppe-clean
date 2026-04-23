@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
-import 'package:image/image.dart' as img;
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
@@ -17,7 +16,10 @@ class MyApp extends StatelessWidget {
   const MyApp({super.key});
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'PPE Detector', theme: ThemeData.dark(), home: const PPECameraScreen());
+    title: 'PPE Detector',
+    theme: ThemeData.dark(),
+    home: const PPECameraScreen(),
+  );
 }
 
 class PPECameraScreen extends StatefulWidget {
@@ -31,52 +33,55 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   late Interpreter _interpreter;
   List<String> _labels = [];
   List<String> _detections = [];
+  String _status = "Loading...";
   bool _isReady = false, _isProcessing = false;
   final int _inputSize = 320;
-  final double _confThreshold = 0.5;
-  String _status = "Loading..."; // 👈 СЮДА, с таким же отступом (2 пробела)
+  final double _confThreshold = 0.1; // Низкий порог для отладки
 
   @override
-  void initState() { super.initState(); _init(); }
+  void initState() {
+    super.initState();
+    _init();
+  }
 
   Future<void> _init() async {
     try {
       _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
       await _controller.initialize();
-      
+
       _labels = (await rootBundle.loadString('assets/labels.txt'))
-          .split('\n').where((s) => s.trim().isNotEmpty).toList();
-      print("✅ Labels loaded: ${_labels.length} -> ${_labels.first}");
+          .split('\n')
+          .where((s) => s.trim().isNotEmpty)
+          .toList();
+      _status = "Labels: ${_labels.length}";
 
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
-      print("📐 Input shape: ${_interpreter.getInputTensor(0).shape}");
-      print("📐 Output shape: ${_interpreter.getOutputTensor(0).shape}");
-      
+      _status = "Model loaded";
+
       _isReady = true;
       await _controller.startImageStream(_processFrame);
       if (mounted) setState(() {});
     } catch (e) {
-      print(" INIT ERROR: $e");
+      _status = "❌ Init: $e";
+      if (mounted) setState(() {});
     }
   }
 
-      void _processFrame(CameraImage image) {
+  void _processFrame(CameraImage image) {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
-    _status = "🔄 Inference...";
+    _status = "🔄 Processing...";
 
     Future(() {
       try {
-        // Прямая конвертация без decodeImage
         final input = _cameraImageToFloat32(image);
         final output = List.filled(1 * 84 * 8400, 0.0);
         _interpreter.run(input, output);
-        
         _parseYOLO(output);
         _status = "✅ OK";
       } catch (e, st) {
         _detections = ["❌ $e", st.toString().split('\n').first];
-        _status = "⛔ Crash";
+        _status = "⛔ Error";
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
@@ -84,7 +89,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     });
   }
 
-    Float32List _cameraImageToFloat32(CameraImage image) {
+  Float32List _cameraImageToFloat32(CameraImage image) {
     final int target = _inputSize;
     final Float32List result = Float32List(target * target * 3);
     
@@ -122,21 +127,62 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return result;
   }
 
+  void _parseYOLO(List<double> output) {
+    _detections = [];
+    
+    // 🔍 Дебаг: первые 20 значений
+    String debug = "Out[0-19]: ";
+    for (int i = 0; i < 20 && i < output.length; i++) {
+      debug += "${output[i].toStringAsFixed(3)} ";
+    }
+    _detections.add(debug);
+    
+    // 🔍 Максимальная уверенность
+    double maxConf = 0;
+    for (int i = 0; i < 8400; i++) {
+      final conf = output[i * 84 + 4];
+      if (conf > maxConf) maxConf = conf;
+    }
+    _detections.add("Max conf: ${maxConf.toStringAsFixed(3)}");
+    
+    // 🔍 Парсинг детекций
+    for (int i = 0; i < 8400; i++) {
+      final conf = output[i * 84 + 4];
+      if (conf > _confThreshold) {
+        var maxCls = 0;
+        var maxVal = -1.0;
+        for (int c = 0; c < _labels.length; c++) {
+          final v = output[i * 84 + 5 + c];
+          if (v > maxVal) { maxVal = v; maxCls = c; }
+        }
+        if (maxCls < _labels.length) {
+          _detections.add('${_labels[maxCls]}: ${(conf * 100).toInt()}%');
+        }
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    if (!_controller.value.isInitialized) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (!_controller.value.isInitialized) {
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
     return Scaffold(
       body: Stack(children: [
         CameraPreview(_controller),
-        // 👇 ДОБАВЬ ЭТО:
+        // Статус сверху
         Positioned(top: 40, left: 10, right: 10,
-          child: Text(_status, style: const TextStyle(color: Colors.yellow, fontSize: 18, fontWeight: FontWeight.bold)),
+          child: Text(_status, style: const TextStyle(color: Colors.yellow, fontSize: 16, fontWeight: FontWeight.bold)),
         ),
-        // 👇 Существующий блок с детекциями:
+        // Детекции снизу
         Positioned(bottom: 20, left: 10, right: 10,
-          child: Container(padding: const EdgeInsets.all(8), color: Colors.black87,
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start,
-              children: _detections.map((t) => Text(t, style: const TextStyle(color: Colors.white, fontSize: 16))).toList()),
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            color: Colors.black87,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: _detections.map((t) => Text(t, style: const TextStyle(color: Colors.white, fontSize: 14))).toList(),
+            ),
           ),
         ),
       ]),
@@ -144,5 +190,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   }
 
   @override
-  void dispose() { _controller.dispose(); _interpreter.close(); super.dispose(); }
+  void dispose() {
+    _controller.dispose();
+    _interpreter.close();
+    super.dispose();
+  }
 }
