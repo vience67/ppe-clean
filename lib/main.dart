@@ -34,11 +34,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   List<String> _labels = [];
   List<String> _detections = [];
   String _status = "Initializing...";
-  String _debugRawOutput = "..."; // 🔑 Для вывода сырых данных
+  String _debugRawOutput = "...";
   bool _isReady = false;
   bool _isProcessing = false;
   final int _inputSize = 320;
-  final double _confThreshold = 0.05; // 🔑 Снижаем порог до минимума
+  final double _confThreshold = 0.05;
 
   int _numClasses = 3;
   int _numAnchors = 2100;
@@ -63,7 +63,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
       
+      // Загружаем модель
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
+      
+      // 🔧 ВАЖНО: Вызываем allocateTensors ОДИН РАЗ здесь
+      _interpreter.allocateTensors();
 
       final outShape = _interpreter.getOutputTensor(0).shape;
       _numClasses = outShape[1] - 5; 
@@ -104,11 +108,10 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         // Размер выхода: Batch(1) * Features(8) * Anchors(2100)
         final int outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
         
-        // 🔧 ИСПОЛЬЗУЕМ Float32List ДЛЯ ВЫХОДА (как и для входа)
+        // 🔧 Используем Float32List для выхода
         final output = Float32List(outputSize);
         
-        // 🔧 ЯВНАЯ ИНИЦИАЛИЗАЦИЯ (иногда помогает избежать Bad State)
-        _interpreter.allocateTensors();
+        // 🔧 ЗАПУСКАЕМ ИНФЕРЕНС (без allocateTensors!)
         _interpreter.run(input, output);
         
         // Выводим первые 10 чисел
@@ -123,7 +126,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       } catch (e, st) {
         _status = "❌ TFLite Crash: $e";
         _debugRawOutput = st.toString().substring(0, 150);
-        // 🔧 Останавливаем поток, чтобы не спамить ошибками
         _controller.stopImageStream();
         _isReady = false;
       } finally {
@@ -174,10 +176,8 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _parseYOLO(List<double> output) {
     List<String> newDetections = [];
     
-    // Дебаг уверенности
     String confDebug = "ObjConf[0-4]: ";
     for (int j = 0; j < 5; j++) {
-       // Feature 4 — уверенность объекта. Индекс: 4 * 2100 + j
        confDebug += "${output[4 * _numAnchors + j].toStringAsFixed(2)} ";
     }
     newDetections.add(confDebug);
@@ -185,7 +185,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     double maxConf = 0;
 
     for (int j = 0; j < _numAnchors; j++) {
-      final objConf = output[4 * _numAnchors + j]; // Feature 4
+      final objConf = output[4 * _numAnchors + j];
 
       if (objConf > maxConf) maxConf = objConf;
 
@@ -194,7 +194,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         int maxClassIdx = 0;
 
         for (int c = 0; c < _numClasses; c++) {
-          final classScore = output[(5 + c) * _numAnchors + j]; // Feature 5, 6, 7...
+          final classScore = output[(5 + c) * _numAnchors + j];
           if (classScore > maxClassScore) {
             maxClassScore = classScore;
             maxClassIdx = c;
@@ -210,8 +210,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     }
     
     newDetections.add("Max ObjConf: ${maxConf.toStringAsFixed(3)}");
-
-    // Обновляем глобальный список
     _detections = newDetections;
   }
 
@@ -225,22 +223,16 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return Scaffold(
       body: Stack(children: [
         CameraPreview(_controller),
-        
-        // 🔴 СТАТУС СВЕРХУ
         Positioned(top: 50, left: 10, right: 10,
           child: Container(padding: EdgeInsets.all(6), color: Colors.black54,
             child: Text(_status, style: TextStyle(color: Colors.yellowAccent, fontSize: 12, fontWeight: FontWeight.bold)),
           ),
         ),
-
-        // 🔵 СЫРЫЕ ДАННЫЕ (СЕРЕДИНА)
         Positioned(top: 120, left: 10, right: 10,
           child: Container(padding: EdgeInsets.all(6), color: Colors.blueAccent.withOpacity(0.7),
             child: Text(_debugRawOutput, style: TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace')),
           ),
         ),
-
-        // 🟢 ДЕТЕКЦИИ (СНИЗУ)
         Positioned(bottom: 20, left: 10, right: 10,
           child: Container(padding: EdgeInsets.all(10), color: Colors.black87,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min,
