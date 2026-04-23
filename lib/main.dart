@@ -60,27 +60,22 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     }
   }
 
-    void _processFrame(CameraImage image) {
+      void _processFrame(CameraImage image) {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
-    _status = "🔄 Обработка...";
+    _status = "🔄 Inference...";
 
     Future(() {
       try {
-        final buf = _yuv420ToUint8(image);
-        final decoded = img.decodeImage(buf);
-        if (decoded == null) throw Exception("decodeImage вернул null");
-
-        final resized = img.copyResize(decoded, width: _inputSize, height: _inputSize, interpolation: img.Interpolation.nearest);
-        final input = _imageToFloat32(resized);
-
+        // Прямая конвертация без decodeImage
+        final input = _cameraImageToFloat32(image);
         final output = List.filled(1 * 84 * 8400, 0.0);
         _interpreter.run(input, output);
         
         _parseYOLO(output);
         _status = "✅ OK";
       } catch (e, st) {
-        _detections = ["❌ ОШИБКА: $e", "📍 ${st.toString().split('\n').first}"];
+        _detections = ["❌ $e", st.toString().split('\n').first];
         _status = "⛔ Crash";
       } finally {
         _isProcessing = false;
@@ -89,63 +84,42 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     });
   }
 
-  Uint8List _yuv420ToUint8(CameraImage image) {
-    final yRow = image.planes[0].bytesPerRow;
-    final uvRow = image.planes[1].bytesPerRow;
-    final uvPixel = image.planes[1].bytesPerRow ~/ (image.width ~/ 2);
-    final buf = Uint8List(image.width * image.height * 3);
+    Float32List _cameraImageToFloat32(CameraImage image) {
+    final int target = _inputSize;
+    final Float32List result = Float32List(target * target * 3);
+    
+    final int yRow = image.planes[0].bytesPerRow;
+    final int uvRow = image.planes[1].bytesPerRow;
+    final int uvPixel = uvRow ~/ (image.width ~/ 2);
+    
+    final Uint8List y = image.planes[0].bytes;
+    final Uint8List u = image.planes[1].bytes;
+    final Uint8List v = image.planes[2].bytes;
+    
     int idx = 0;
-    for (int y = 0; y < image.height; y++) {
-      for (int x = 0; x < image.width; x++) {
-        final uvIdx = uvPixel * (x ~/ 2) + uvRow * (y ~/ 2);
-        buf[idx++] = image.planes[0].bytes[y * yRow + x];
-        buf[idx++] = image.planes[1].bytes[uvIdx];
-        buf[idx++] = image.planes[2].bytes[uvIdx];
+    for (int ty = 0; ty < target; ty++) {
+      final int sy = (ty * image.height / target).floor();
+      final int yOff = sy * yRow;
+      final int uvOff = (sy ~/ 2) * uvRow;
+      
+      for (int tx = 0; tx < target; tx++) {
+        final int sx = (tx * image.width / target).floor();
+        final int uvIdx = uvOff + (sx ~/ 2) * uvPixel;
+        
+        final int yVal = y[yOff + sx];
+        final int uVal = u[uvIdx];
+        final int vVal = v[uvIdx];
+        
+        int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
+        int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).round().clamp(0, 255);
+        int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
+        
+        result[idx++] = r / 255.0;
+        result[idx++] = g / 255.0;
+        result[idx++] = b / 255.0;
       }
     }
-    return buf;
-  }
-
-  Float32List _imageToFloat32(img.Image image) {
-    final pixels = image.getBytes(order: img.ChannelOrder.rgb);
-    final buf = Float32List(1 * _inputSize * _inputSize * 3);
-    for (int i = 0; i < pixels.length; i++) buf[i] = pixels[i] / 255.0;
-    return buf;
-  }
-
-    void _parseYOLO(List<double> output) {
-    _detections = [];
-    
-    // 🔍 ПОКАЗЫВАЕМ СЫРОЙ ВЫВОД (первые 20 значений)
-    String debug = "Output[0-19]: ";
-    for (int i = 0; i < 20 && i < output.length; i++) {
-      debug += "${output[i].toStringAsFixed(3)} ";
-    }
-    _detections.add(debug);
-    
-    // 🔍 ПОКАЗЫВАЕМ МАКСИМУМ уверенности
-    double maxConf = 0;
-    int maxIdx = -1;
-    for (int i = 0; i < 8400; i++) {
-      final conf = output[i * 84 + 4];
-      if (conf > maxConf) { maxConf = conf; maxIdx = i; }
-    }
-    _detections.add("Max conf: ${maxConf.toStringAsFixed(3)} at box #$maxIdx");
-    
-    // 🔍 СТАРЫЙ ПАРСИНГ (оставляем на потом)
-    for (int i = 0; i < 8400; i++) {
-      final conf = output[i * 84 + 4];
-      if (conf > _confThreshold) {
-        var maxCls = 0; var maxVal = -1.0;
-        for (int c = 0; c < _labels.length; c++) {
-          final v = output[i * 84 + 5 + c];
-          if (v > maxVal) { maxVal = v; maxCls = c; }
-        }
-        _detections.add('${_labels[maxCls]}: ${(conf * 100).toInt()}%');
-      }
-    }
-    
-    if (mounted) setState(() {});
+    return result;
   }
 
   @override
