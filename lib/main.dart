@@ -45,12 +45,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     _init();
   }
 
-  Future<void> _init() async {
+    Future<void> _init() async {
     try {
       _status = "1. Camera init...";
       if (mounted) setState(() {});
 
-      // Используем medium для стабильности
       _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
       await _controller.initialize();
 
@@ -61,14 +60,20 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
       
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
+
+      // 🔍 ЧИТАЕМ ПАСПОРТ МОДЕЛИ
+      final inputTensor = _interpreter.getInputTensor(0);
+      final outputTensor = _interpreter.getOutputTensor(0);
+      
+      String modelInfo = "In: ${inputTensor.shape}, Type: ${inputTensor.type}\n";
+      modelInfo += "Out: ${outputTensor.shape}, Type: ${outputTensor.type}";
+      
+      _status = modelInfo; // <-- Показываем инфо на экране
       _isReady = true;
 
-      // 🔥 ИСПРАВЛЕНИЕ: Ждем 2 секунды перед запуском потока
       await Future.delayed(const Duration(seconds: 2));
-      _status = "3. Starting stream (retry logic)...";
       if (mounted) setState(() {});
 
-      // 🔥 ИСПРАВЛЕНИЕ: Цикл попыток запуска
       bool streamStarted = false;
       for (int i = 0; i < 3; i++) {
         try {
@@ -76,22 +81,17 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           streamStarted = true;
           break;
         } catch (e) {
-          print("⚠️ Stream attempt ${i+1} failed: $e");
           await Future.delayed(const Duration(seconds: 1));
         }
       }
-
-      if (streamStarted) {
-        _status = "✅ Camera Active";
-      } else {
-        _status = "❌ Stream failed";
-      }
       
+      if (streamStarted) {
+        _status += "\n✅ Stream Active";
+      }
       if (mounted) setState(() {});
 
     } catch (e, st) {
-      _status = "❌ Init Error: $e";
-      print(st);
+      _status = "❌ Error: $e";
       if (mounted) setState(() {});
     }
   }
