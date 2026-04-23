@@ -52,38 +52,34 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     _init();
   }
 
+  bool _tensorsAllocated = false;
+  final Object _lock = Object();
+
   Future<void> _init() async {
     try {
       _status = "1. Camera...";
       if (mounted) setState(() {});
 
-      // Инициализация камеры
       _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
       await _controller.initialize();
 
       _status = "2. Model...";
       if (mounted) setState(() {});
 
-      // Загрузка меток
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
 
-      // Загрузка модели
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
 
-      // Читаем входной тензор
       final inputTensor = _interpreter.getInputTensor(0);
       final inputShape = inputTensor.shape;
       
-      // Считаем размер входа
       _inputTensorSize = 1;
       for (int dim in inputShape) {
         _inputTensorSize *= dim;
       }
 
-      // Читаем форму выхода
       final outShape = _interpreter.getOutputTensor(0).shape;
-      // Если [1, 8, 2100], то transposed = true
       if (outShape.length == 3 && outShape[1] < outShape[2]) {
         _outputTransposed = true;
         _numClasses = outShape[1] - 5;
@@ -94,18 +90,23 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
 
-      // 🔥 НЕ ВЫЗЫВАЕМ allocateTensors() ЗДЕСЬ!
-      // Пусть run() сделает это сам при первом запуске.
+      // 🔥 Пробуем выделить память С ЗАЩИТОЙ
+      try {
+        _interpreter.allocateTensors();
+        _tensorsAllocated = true;
+        _status = "Memory OK";
+      } catch (e) {
+        _status = "⚠️ Alloc: $e";
+        _tensorsAllocated = false;
+      }
 
       _debugInfo = "In: $inputShape (size: $_inputTensorSize)\n";
       _debugInfo += "Out: $outShape\nClasses: $_numClasses, Anchors: $_numAnchors";
-      _status = "Model OK";
       _isReady = true;
 
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) setState(() {});
 
-      // Запуск потока камеры
       bool started = false;
       for (int i = 0; i < 3; i++) {
         try {
@@ -117,7 +118,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         }
       }
       if (started && mounted) {
-        _status += "\n✅ Stream Active";
+        _status += "\n✅ Active";
         setState(() {});
       }
 
@@ -126,6 +127,49 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       _debugInfo = st.toString().substring(0, 200);
       if (mounted) setState(() {});
     }
+  }
+
+  void _processFrame(CameraImage image) {
+    if (!_isReady || _isProcessing) return;
+    _isProcessing = true;
+
+    Future(() {
+      try {
+        // 🔥 Проверяем, выделена ли память
+        if (!_tensorsAllocated) {
+          try {
+            _interpreter.allocateTensors();
+            _tensorsAllocated = true;
+          } catch (e) {
+            throw Exception("Cannot allocate: $e");
+          }
+        }
+
+        final input = _cameraImageToFloat32(image);
+        
+        if (input.length != _inputTensorSize) {
+          throw Exception("Size: ${input.length} != $_inputTensorSize");
+        }
+        
+        final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
+        
+        // 🔥 Запускаем с блокировкой
+        lock: {
+          _interpreter.run(input, output);
+        }
+        
+        _parseYOLO(output);
+        
+      } catch (e, st) {
+        _status = "❌ Run: $e";
+        _debugInfo = st.toString().substring(0, 150);
+        // 🔥 Сбрасываем флаг при ошибке
+        _tensorsAllocated = false;
+      } finally {
+        _isProcessing = false;
+        if (mounted) setState(() {});
+      }
+    });
   }
 
   void _processFrame(CameraImage image) {
