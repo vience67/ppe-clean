@@ -33,54 +33,51 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   late Interpreter _interpreter;
   List<String> _labels = [];
   List<String> _detections = [];
-  String _status = "Loading...";
-  bool _isReady = false, _isProcessing = false;
+  String _status = "Initializing...";
+  bool _isReady = false;
+  bool _isProcessing = false;
+  bool _isStreaming = false;
   final int _inputSize = 320;
-  final double _confThreshold = 0.1; // Низкий порог для отладки
+  final double _confThreshold = 0.1;
 
   @override
-  void initState() {
-    super.initState();
-    _init();
-  }
+  void initState() { super.initState(); _init(); }
 
   Future<void> _init() async {
     try {
+      _status = "Starting camera...";
       _controller = CameraController(cameras[0], ResolutionPreset.low, enableAudio: false);
       await _controller.initialize();
-      
-      // 🔧 Небольшая пауза перед запуском потока
-      await Future.delayed(const Duration(milliseconds: 300));
-      
+
+      _status = "Loading assets...";
       _labels = (await rootBundle.loadString('assets/labels.txt'))
-          .split('\n')
-          .where((s) => s.trim().isNotEmpty)
-          .toList();
-      _status = "Labels: ${_labels.length}";
-
+          .split('\n').where((s) => s.trim().isNotEmpty).toList();
+      
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
-      _status = "Model loaded";
-
       _isReady = true;
-      
-      // 🔧 Запускаем поток только если виджет ещё активен
-      if (mounted && _controller.value.isInitialized) {
-        await _controller.startImageStream(_processFrame);
-        _status = "📷 Stream started";
-      }
-      
       if (mounted) setState(() {});
+
+      // Ждём отрисовки поверхности камеры
+      await Future.delayed(const Duration(milliseconds: 800));
+
+      if (mounted && !_isStreaming && _controller.value.isInitialized) {
+        _status = "Starting stream...";
+        _isStreaming = true;
+        await _controller.startImageStream(_processFrame);
+        _status = "📷 Stream Active";
+        if (mounted) setState(() {});
+      }
     } catch (e, st) {
-      _status = "❌ Init: $e";
+      _status = "❌ Init Failed: $e";
       _detections = [st.toString().split('\n').first];
       if (mounted) setState(() {});
     }
   }
 
   void _processFrame(CameraImage image) {
-    if (!_isReady || _isProcessing) return;
+    if (!_isReady || _isProcessing || !_isStreaming) return;
     _isProcessing = true;
-    _status = "🔄 Processing...";
+    _status = "🔄 Inference...";
 
     Future(() {
       try {
@@ -88,10 +85,10 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         final output = List.filled(1 * 84 * 8400, 0.0);
         _interpreter.run(input, output);
         _parseYOLO(output);
-        _status = "✅ OK";
+        _status = "✅ Inference OK";
       } catch (e, st) {
-        _detections = ["❌ $e", st.toString().split('\n').first];
-        _status = "⛔ Error";
+        _detections = ["❌ Error: $e", st.toString().split('\n').first];
+        _status = "⛔ Crash";
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
@@ -140,27 +137,24 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _parseYOLO(List<double> output) {
     _detections = [];
     
-    // 🔍 Дебаг: первые 20 значений
-    String debug = "Out[0-19]: ";
+    String debug = "Raw[0-19]: ";
     for (int i = 0; i < 20 && i < output.length; i++) {
       debug += "${output[i].toStringAsFixed(3)} ";
     }
     _detections.add(debug);
     
-    // 🔍 Максимальная уверенность
     double maxConf = 0;
     for (int i = 0; i < 8400; i++) {
       final conf = output[i * 84 + 4];
       if (conf > maxConf) maxConf = conf;
     }
-    _detections.add("Max conf: ${maxConf.toStringAsFixed(3)}");
+    _detections.add("MaxConf: ${maxConf.toStringAsFixed(3)}");
     
-    // 🔍 Парсинг детекций
     for (int i = 0; i < 8400; i++) {
       final conf = output[i * 84 + 4];
       if (conf > _confThreshold) {
-        var maxCls = 0;
-        var maxVal = -1.0;
+        int maxCls = 0;
+        double maxVal = -1.0;
         for (int c = 0; c < _labels.length; c++) {
           final v = output[i * 84 + 5 + c];
           if (v > maxVal) { maxVal = v; maxCls = c; }
@@ -175,23 +169,25 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   @override
   Widget build(BuildContext context) {
     if (!_controller.value.isInitialized) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      return Scaffold(body: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        CircularProgressIndicator(), SizedBox(height: 16), Text(_status)
+      ])));
     }
     return Scaffold(
       body: Stack(children: [
         CameraPreview(_controller),
-        // Статус сверху
-        Positioned(top: 40, left: 10, right: 10,
-          child: Text(_status, style: const TextStyle(color: Colors.yellow, fontSize: 16, fontWeight: FontWeight.bold)),
+        Positioned(top: 50, left: 10, right: 10,
+          child: Container(padding: EdgeInsets.all(6), color: Colors.black54,
+            child: Text(_status, style: TextStyle(color: Colors.yellowAccent, fontSize: 14, fontWeight: FontWeight.bold)),
+          ),
         ),
-        // Детекции снизу
         Positioned(bottom: 20, left: 10, right: 10,
-          child: Container(
-            padding: const EdgeInsets.all(8),
-            color: Colors.black87,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: _detections.map((t) => Text(t, style: const TextStyle(color: Colors.white, fontSize: 14))).toList(),
+          child: Container(padding: EdgeInsets.all(10), color: Colors.black87,
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min,
+              children: _detections.map((t) => Padding(
+                padding: EdgeInsets.only(bottom: 2),
+                child: Text(t, style: TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'))
+              )).toList(),
             ),
           ),
         ),
@@ -201,6 +197,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   @override
   void dispose() {
+    _isStreaming = false;
     _controller.dispose();
     _interpreter.close();
     super.dispose();
