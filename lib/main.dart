@@ -36,26 +36,25 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   String _status = "Initializing...";
   bool _isReady = false;
   bool _isProcessing = false;
-  bool _streamStarted = false; // 🔑 Флаг, чтобы не запустить дважды
   final int _inputSize = 320;
   final double _confThreshold = 0.1;
 
   @override
   void initState() {
     super.initState();
-    _initCamera();
+    _init();
   }
 
-  Future<void> _initCamera() async {
+  Future<void> _init() async {
     try {
-      _status = "Camera init...";
+      _status = "1. Camera init...";
       if (mounted) setState(() {});
 
-      // 🔑 Используем MEDIUM (низкое разрешение часто вызывает краш)
+      // Используем medium для стабильности
       _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
       await _controller.initialize();
 
-      _status = "Loading model...";
+      _status = "2. Loading model...";
       if (mounted) setState(() {});
 
       _labels = (await rootBundle.loadString('assets/labels.txt'))
@@ -64,54 +63,59 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
       _isReady = true;
 
-      // 🔑 Запускаем поток ТОЛЬКО после того, как виджет отрисовался
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && !_streamStarted && _controller.value.isInitialized) {
-          _startStream();
+      // 🔥 ИСПРАВЛЕНИЕ: Ждем 2 секунды перед запуском потока
+      await Future.delayed(const Duration(seconds: 2));
+      _status = "3. Starting stream (retry logic)...";
+      if (mounted) setState(() {});
+
+      // 🔥 ИСПРАВЛЕНИЕ: Цикл попыток запуска
+      bool streamStarted = false;
+      for (int i = 0; i < 3; i++) {
+        try {
+          await _controller.startImageStream(_processFrame);
+          streamStarted = true;
+          break;
+        } catch (e) {
+          print("⚠️ Stream attempt ${i+1} failed: $e");
+          await Future.delayed(const Duration(seconds: 1));
         }
-      });
+      }
+
+      if (streamStarted) {
+        _status = "✅ Camera Active";
+      } else {
+        _status = "❌ Stream failed";
+      }
       
+      if (mounted) setState(() {});
+
     } catch (e, st) {
-      _status = "❌ Error: $e";
+      _status = "❌ Init Error: $e";
+      print(st);
       if (mounted) setState(() {});
     }
   }
 
-  void _startStream() {
-    try {
-      _streamStarted = true;
-      _status = "Stream starting...";
-      
-      _controller.startImageStream((CameraImage image) {
-        if (!_isReady || _isProcessing) return;
-        _isProcessing = true;
-        _status = "🔄 Detecting...";
+  void _processFrame(CameraImage image) {
+    if (!_isReady || _isProcessing) return;
+    _isProcessing = true;
+    // Не обновляем UI статус здесь слишком часто, чтобы не лагало
 
-        // Асинхронная обработка, чтобы не блокировать поток камеры
-        Future(() {
-          try {
-            final input = _cameraImageToFloat32(image);
-            final output = List.filled(1 * 84 * 8400, 0.0);
-            _interpreter.run(input, output);
-            _parseYOLO(output);
-            _status = "✅ OK";
-          } catch (e, st) {
-            _detections = ["⚠️ $e"];
-            _status = "⛔ Error";
-          } finally {
-            _isProcessing = false;
-            if (mounted) setState(() {});
-          }
-        });
-      });
-      
-      _status = "📷 Camera Active";
-      if (mounted) setState(() {});
-      
-    } catch (e) {
-      _status = "❌ Stream failed: $e";
-      if (mounted) setState(() {});
-    }
+    Future(() {
+      try {
+        final input = _cameraImageToFloat32(image);
+        final output = List.filled(1 * 84 * 8400, 0.0);
+        _interpreter.run(input, output);
+        _parseYOLO(output);
+      } catch (e, st) {
+        // Ошибки обработки кадра не должны крашить приложение
+        print("Frame error: $e");
+      } finally {
+        _isProcessing = false;
+        // Обновляем UI раз в N кадров или просто setState (Flutter оптимизирует)
+        if (mounted) setState(() {});
+      }
+    });
   }
 
   Float32List _cameraImageToFloat32(CameraImage image) {
@@ -155,7 +159,8 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _parseYOLO(List<double> output) {
     _detections = [];
     
-    String debug = "Raw[0-5]: ";
+    // Дебаг
+    String debug = "Out[0-4]: ";
     for (int i = 0; i < 5 && i < output.length; i++) {
       debug += "${output[i].toStringAsFixed(2)} ";
     }
@@ -163,10 +168,12 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     
     double maxConf = 0;
     for (int i = 0; i < 8400; i++) {
+      // Проверка границ массива на случай другой модели
+      if (i * 84 + 4 >= output.length) break; 
       final conf = output[i * 84 + 4];
       if (conf > maxConf) maxConf = conf;
     }
-    _detections.add("MaxConf: ${maxConf.toStringAsFixed(3)}");
+    _detections.add("Max: ${maxConf.toStringAsFixed(3)}");
     
     for (int i = 0; i < 8400; i++) {
       final conf = output[i * 84 + 4];
@@ -174,8 +181,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         int maxCls = 0;
         double maxVal = -1.0;
         for (int c = 0; c < _labels.length; c++) {
-          final v = output[i * 84 + 5 + c];
-          if (v > maxVal) { maxVal = v; maxCls = c; }
+           if (i * 84 + 5 + c >= output.length) break;
+           final v = output[i * 84 + 5 + c];
+           if (v > maxVal) { maxVal = v; maxCls = c; }
         }
         if (maxCls < _labels.length) {
           _detections.add('${_labels[maxCls]}: ${(conf * 100).toInt()}%');
@@ -186,14 +194,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Если камера не готова, показываем загрузку
     if (_controller == null || !_controller.value.isInitialized) {
-      return Scaffold(body: Center(child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [CircularProgressIndicator(), SizedBox(height: 20), Text(_status)]
-      )));
+      return Scaffold(body: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        CircularProgressIndicator(), SizedBox(height: 16), Text(_status)
+      ])));
     }
-    
     return Scaffold(
       body: Stack(children: [
         CameraPreview(_controller),
@@ -218,7 +223,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   @override
   void dispose() {
-    _streamStarted = false;
+    _controller.stopImageStream();
     _controller.dispose();
     _interpreter.close();
     super.dispose();
