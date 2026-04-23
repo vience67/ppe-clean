@@ -41,10 +41,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   final double _confThreshold = 0.1;
 
   // Параметры модели
-  bool _inputIsUint8 = false;
   int _numClasses = 3;
   int _numAnchors = 2100;
-  bool _outputTransposed = true; // [1, 8, 2100] вместо [1, 2100, 8]
+  bool _outputTransposed = true; // [1, 8, 2100]
 
   @override
   void initState() {
@@ -68,11 +67,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
 
-      // 🔍 Читаем тип входа
-      final inputTensor = _interpreter.getInputTensor(0);
-      _inputIsUint8 = inputTensor.type == TfLiteType.uint8;
-      
-      // 🔍 Читаем форму выхода
+      // Читаем форму выхода
       final outShape = _interpreter.getOutputTensor(0).shape;
       // [1, 8, 2100] → transposed
       if (outShape.length == 3 && outShape[1] < outShape[2]) {
@@ -85,10 +80,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
 
-      _debugInfo = "In: ${inputTensor.shape} (${_inputIsUint8 ? 'uint8' : 'float32'})\n";
-      _debugInfo += "Out: $outShape (transposed: $_outputTransposed)\n";
-      _debugInfo += "Classes: $_numClasses, Anchors: $_numAnchors";
-      
+      _debugInfo = "Out: $outShape\nClasses: $_numClasses, Anchors: $_numAnchors";
       _status = "Model OK\n$_debugInfo";
       _isReady = true;
 
@@ -102,7 +94,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           await _controller.startImageStream(_processFrame);
           started = true;
           break;
-        } catch (_) => await Future.delayed(const Duration(seconds: 1));
+        } catch (_) {
+          await Future.delayed(const Duration(seconds: 1));
+        }
       }
       if (started && mounted) {
         _status += "\n✅ Stream Active";
@@ -122,18 +116,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
     Future(() {
       try {
-        // Конвертация в нужный тип
-        if (_inputIsUint8) {
-          final input = _cameraImageToUint8(image);
-          final output = Uint8List(1 * (4 + 1 + _numClasses) * _numAnchors);
-          _interpreter.run(input, output);
-          _parseYOLO(_convertUint8ToDouble(output));
-        } else {
-          final input = _cameraImageToFloat32(image);
-          final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
-          _interpreter.run(input, output);
-          _parseYOLO(output);
-        }
+        // Конвертация в float32 (стандарт для YOLO)
+        final input = _cameraImageToFloat32(image);
+        final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
+        _interpreter.run(input, output);
+        _parseYOLO(output);
       } catch (e, st) {
         _status = "❌ Run: $e";
         _debugInfo = st.toString().substring(0, 150);
@@ -142,40 +129,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         if (mounted) setState(() {});
       }
     });
-  }
-
-  // Конвертация для uint8 входа
-  Uint8List _cameraImageToUint8(CameraImage image) {
-    final int target = _inputSize;
-    final Uint8List result = Uint8List(target * target * 3);
-    
-    final int yRow = image.planes[0].bytesPerRow;
-    final int uvRow = image.planes[1].bytesPerRow;
-    final int uvPixel = uvRow ~/ (image.width ~/ 2);
-    final Uint8List y = image.planes[0].bytes;
-    final Uint8List u = image.planes[1].bytes;
-    final Uint8List v = image.planes[2].bytes;
-    
-    int idx = 0;
-    for (int ty = 0; ty < target; ty++) {
-      final int sy = (ty * image.height / target).floor();
-      final int yOff = sy * yRow;
-      final int uvOff = (sy ~/ 2) * uvRow;
-      for (int tx = 0; tx < target; tx++) {
-        final int sx = (tx * image.width / target).floor();
-        final int uvIdx = uvOff + (sx ~/ 2) * uvPixel;
-        final int yVal = y[yOff + sx];
-        final int uVal = u[uvIdx];
-        final int vVal = v[uvIdx];
-        int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
-        int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).round().clamp(0, 255);
-        int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
-        result[idx++] = r;
-        result[idx++] = g;
-        result[idx++] = b;
-      }
-    }
-    return result;
   }
 
   // Конвертация для float32 входа
@@ -212,14 +165,10 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return result;
   }
 
-  List<double> _convertUint8ToDouble(Uint8List input) {
-    return input.map((e) => e / 255.0).toList();
-  }
-
   void _parseYOLO(List<double> output) {
     List<String> newDetections = [];
     
-    // Дебаг
+    // Дебаг: первые 5 значений
     String debug = "Raw[0-4]: ";
     for (int i = 0; i < 5 && i < output.length; i++) {
       debug += "${output[i].toStringAsFixed(2)} ";
