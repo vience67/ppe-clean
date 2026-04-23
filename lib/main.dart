@@ -40,10 +40,10 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   final int _inputSize = 320;
   final double _confThreshold = 0.1;
 
-  // Параметры модели
   int _numClasses = 3;
   int _numAnchors = 2100;
-  bool _outputTransposed = true; // [1, 8, 2100]
+  bool _outputTransposed = true;
+  int _inputTensorSize = 0;
 
   @override
   void initState() {
@@ -67,9 +67,17 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
 
-      // Читаем форму выхода
+      // 🔍 Читаем входной тензор
+      final inputTensor = _interpreter.getInputTensor(0);
+      final inputShape = inputTensor.shape;
+      
+      _inputTensorSize = 1;
+      for (int dim in inputShape) {
+        _inputTensorSize *= dim;
+      }
+
+      // Читаем выход
       final outShape = _interpreter.getOutputTensor(0).shape;
-      // [1, 8, 2100] → transposed
       if (outShape.length == 3 && outShape[1] < outShape[2]) {
         _outputTransposed = true;
         _numClasses = outShape[1] - 5;
@@ -80,14 +88,17 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
 
-      _debugInfo = "Out: $outShape\nClasses: $_numClasses, Anchors: $_numAnchors";
-      _status = "Model OK\n$_debugInfo";
+      // 🔥 Явно выделяем память ОДИН РАЗ
+      _interpreter.allocateTensors();
+      
+      _debugInfo = "In: $inputShape (size: $_inputTensorSize)\n";
+      _debugInfo += "Out: $outShape\nClasses: $_numClasses, Anchors: $_numAnchors";
+      _status = "Model OK\nAllocated";
       _isReady = true;
 
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) setState(() {});
 
-      // Запуск потока
       bool started = false;
       for (int i = 0; i < 3; i++) {
         try {
@@ -99,7 +110,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         }
       }
       if (started && mounted) {
-        _status += "\n✅ Stream Active";
+        _status += "\n✅ Active";
         setState(() {});
       }
 
@@ -116,11 +127,16 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
     Future(() {
       try {
-        // Конвертация в float32 (стандарт для YOLO)
         final input = _cameraImageToFloat32(image);
+        
+        if (input.length != _inputTensorSize) {
+          throw Exception("Size: ${input.length} != $_inputTensorSize");
+        }
+        
         final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
         _interpreter.run(input, output);
         _parseYOLO(output);
+        
       } catch (e, st) {
         _status = "❌ Run: $e";
         _debugInfo = st.toString().substring(0, 150);
@@ -131,7 +147,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     });
   }
 
-  // Конвертация для float32 входа
   Float32List _cameraImageToFloat32(CameraImage image) {
     final int target = _inputSize;
     final Float32List result = Float32List(target * target * 3);
@@ -168,7 +183,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _parseYOLO(List<double> output) {
     List<String> newDetections = [];
     
-    // Дебаг: первые 5 значений
     String debug = "Raw[0-4]: ";
     for (int i = 0; i < 5 && i < output.length; i++) {
       debug += "${output[i].toStringAsFixed(2)} ";
@@ -178,7 +192,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     double maxConf = 0;
 
     for (int j = 0; j < _numAnchors; j++) {
-      // Читаем уверенность объекта (feature #4)
       final int objIdx = _outputTransposed 
           ? 4 * _numAnchors + j 
           : j * (4 + 1 + _numClasses) + 4;
