@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
-import 'package:tflite_flutter/tflite_flutter.dart';
+import 'package:tflite/tflite.dart';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
 
@@ -30,7 +30,6 @@ class PPECameraScreen extends StatefulWidget {
 
 class _PPECameraScreenState extends State<PPECameraScreen> {
   late CameraController _controller;
-  late Interpreter _interpreter;
   List<String> _labels = [];
   List<String> _detections = [];
   String _status = "Initializing...";
@@ -38,10 +37,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   bool _isReady = false;
   bool _isProcessing = false;
   final int _inputSize = 320;
-  final double _confThreshold = 0.05;
-
-  int _numClasses = 3;
-  int _numAnchors = 2100;
+  final double _confThreshold = 0.1;
 
   @override
   void initState() {
@@ -62,14 +58,19 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
+
+      // 🔥 ЗАГРУЗКА МОДЕЛИ
+      var res = await Tflite.loadModel(
+        model: "assets/best.tflite",
+        labels: "assets/labels.txt",
+        numThreads: 1,
+        isAsset: true,
+        useGpuDelegate: false,
+      );
       
-      _interpreter = await Interpreter.fromAsset('assets/best.tflite');
-      
-      final outShape = _interpreter.getOutputTensor(0).shape;
-      _numClasses = outShape[1] - 5; 
-      _numAnchors = outShape[2];
-      
-      _status = "In: ${_interpreter.getInputTensor(0).shape}\nOut: $outShape\nClasses: $_numClasses";
+      if (res == null) throw Exception("Failed to load model");
+
+      _status = "Model Loaded\nLabels: ${_labels.length}";
       _isReady = true;
 
       await Future.delayed(const Duration(seconds: 2));
@@ -94,115 +95,42 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   }
 
   void _processFrame(CameraImage image) {
-    // 🔑 Простая проверка без блокировок
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
 
-    // 🔑 Обрабатываем кадр в фоне, но без Completer
-    Future(() {
+    Future(() async {
       try {
-        final input = _cameraImageToFloat32(image);
-        final int outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
-        final output = Float32List(outputSize);
-        
-        // 🔥 Просто run(), без allocateTensors
-        _interpreter.run(input, output);
-        
-        String raw = "Raw[0-9]: ";
-        for(int i=0; i<10 && i<output.length; i++) {
-           raw += "${output[i].toStringAsFixed(2)} ";
-        }
-        _debugRawOutput = raw;
+        // 🔥 ИСПОЛЬЗУЕМ detectObjectOnFrame
+        var recognitions = await Tflite.detectObjectOnFrame(
+          image.planes[0].bytes,
+          model: "SSD", 
+          imageHeight: _inputSize,
+          imageWidth: _inputSize,
+          imageMean: 127.5,
+          imageStd: 127.5,
+          rotation: 0,
+          numResultsPerClass: 5,
+          threshold: 0.1,
+        );
 
-        _parseYOLO(output);
-        
+        if (recognitions != null && recognitions.isNotEmpty) {
+          _detections = [];
+          for (var rec in recognitions) {
+            _detections.add("${rec['detectedClass']}: ${(rec['confidenceInClass'] * 100).toInt()}%");
+          }
+          _debugRawOutput = "Found: ${recognitions.length}";
+        } else {
+          _debugRawOutput = "No detections";
+        }
+
       } catch (e, st) {
         _status = "❌ TFLite: $e";
-        _debugRawOutput = st.toString().substring(0, 150);
-        // 🔑 Не останавливаем поток, просто пропускаем кадр
+        _debugRawOutput = st.toString().substring(0, 100);
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
       }
     });
-  }
-
-  Float32List _cameraImageToFloat32(CameraImage image) {
-    final int target = _inputSize;
-    final Float32List result = Float32List(target * target * 3);
-    
-    final int yRow = image.planes[0].bytesPerRow;
-    final int uvRow = image.planes[1].bytesPerRow;
-    final int uvPixel = uvRow ~/ (image.width ~/ 2);
-    
-    final Uint8List y = image.planes[0].bytes;
-    final Uint8List u = image.planes[1].bytes;
-    final Uint8List v = image.planes[2].bytes;
-    
-    int idx = 0;
-    for (int ty = 0; ty < target; ty++) {
-      final int sy = (ty * image.height / target).floor();
-      final int yOff = sy * yRow;
-      final int uvOff = (sy ~/ 2) * uvRow;
-      
-      for (int tx = 0; tx < target; tx++) {
-        final int sx = (tx * image.width / target).floor();
-        final int uvIdx = uvOff + (sx ~/ 2) * uvPixel;
-        
-        final int yVal = y[yOff + sx];
-        final int uVal = u[uvIdx];
-        final int vVal = v[uvIdx];
-        
-        int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
-        int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).round().clamp(0, 255);
-        int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
-        
-        result[idx++] = r / 255.0;
-        result[idx++] = g / 255.0;
-        result[idx++] = b / 255.0;
-      }
-    }
-    return result;
-  }
-
-  void _parseYOLO(List<double> output) {
-    List<String> newDetections = [];
-    
-    String confDebug = "ObjConf[0-4]: ";
-    for (int j = 0; j < 5; j++) {
-       confDebug += "${output[4 * _numAnchors + j].toStringAsFixed(2)} ";
-    }
-    newDetections.add(confDebug);
-
-    double maxConf = 0;
-
-    for (int j = 0; j < _numAnchors; j++) {
-      final objConf = output[4 * _numAnchors + j];
-
-      if (objConf > maxConf) maxConf = objConf;
-
-      if (objConf > _confThreshold) {
-        double maxClassScore = -1.0;
-        int maxClassIdx = 0;
-
-        for (int c = 0; c < _numClasses; c++) {
-          final classScore = output[(5 + c) * _numAnchors + j];
-          if (classScore > maxClassScore) {
-            maxClassScore = classScore;
-            maxClassIdx = c;
-          }
-        }
-
-        final totalScore = objConf * maxClassScore;
-        if (totalScore > _confThreshold) {
-           final labelName = (maxClassIdx < _labels.length) ? _labels[maxClassIdx] : "C$maxClassIdx";
-           newDetections.add('$labelName: ${(totalScore * 100).toInt()}%');
-        }
-      }
-    }
-    
-    newDetections.add("Max ObjConf: ${maxConf.toStringAsFixed(3)}");
-    _detections = newDetections;
   }
 
   @override
@@ -243,7 +171,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void dispose() {
     _controller.stopImageStream();
     _controller.dispose();
-    _interpreter.close();
+    Tflite.close();
     super.dispose();
   }
 }
