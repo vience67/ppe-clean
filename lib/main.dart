@@ -46,9 +46,12 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   Future<void> _init() async {
     try {
-      _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
+      _controller = CameraController(cameras[0], ResolutionPreset.low, enableAudio: false);
       await _controller.initialize();
-
+      
+      // 🔧 Небольшая пауза перед запуском потока
+      await Future.delayed(const Duration(milliseconds: 300));
+      
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n')
           .where((s) => s.trim().isNotEmpty)
@@ -59,10 +62,17 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       _status = "Model loaded";
 
       _isReady = true;
-      await _controller.startImageStream(_processFrame);
+      
+      // 🔧 Запускаем поток только если виджет ещё активен
+      if (mounted && _controller.value.isInitialized) {
+        await _controller.startImageStream(_processFrame);
+        _status = "📷 Stream started";
+      }
+      
       if (mounted) setState(() {});
-    } catch (e) {
+    } catch (e, st) {
       _status = "❌ Init: $e";
+      _detections = [st.toString().split('\n').first];
       if (mounted) setState(() {});
     }
   }
