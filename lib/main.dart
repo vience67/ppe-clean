@@ -38,6 +38,10 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   bool _isProcessing = false;
   final int _inputSize = 320;
   final double _confThreshold = 0.1;
+  
+  // 🔑 Динамические параметры модели
+  int _numClasses = 3;
+  int _numAnchors = 2100;
 
   @override
   void initState() {
@@ -61,13 +65,16 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
 
-      // 🔍 Читаем инфо о модели
-      final inputTensor = _interpreter.getInputTensor(0);
-      final outputTensor = _interpreter.getOutputTensor(0);
+      // 🔍 Читаем форму выхода модели
+      final outShape = _interpreter.getOutputTensor(0).shape;
+      // Для [1, 8, 2100]: shape[1]=8 (features), shape[2]=2100 (anchors)
+      _numClasses = outShape[1] - 5; // 8 - 5 = 3
+      _numAnchors = outShape[2];     // 2100
       
-      String modelInfo = "In: ${inputTensor.shape}, Type: ${inputTensor.type}\n";
-      modelInfo += "Out: ${outputTensor.shape}, Type: ${outputTensor.type}";
-      
+      String modelInfo = "Classes: $_numClasses, Anchors: $_numAnchors\n";
+      if (_labels.length != _numClasses) {
+        modelInfo += "⚠️ Labels(${ _labels.length}) != Model($_numClasses)\n";
+      }
       _status = modelInfo;
       _isReady = true;
 
@@ -85,9 +92,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         }
       }
       
-      if (streamStarted) {
-        _status += "\n✅ Stream Active";
-      }
+      if (streamStarted) _status += "✅ Stream Active";
       if (mounted) setState(() {});
 
     } catch (e, st) {
@@ -103,10 +108,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     Future(() {
       try {
         final input = _cameraImageToFloat32(image);
-        final output = List.filled(1 * 8 * 2100, 0.0);
+        final outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
+        final output = List.filled(outputSize, 0.0);
         _interpreter.run(input, output);
         _parseYOLO(output);
-      } catch (e, st) {
+      } catch (e) {
         print("Frame error: $e");
       } finally {
         _isProcessing = false;
@@ -156,27 +162,22 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _parseYOLO(List<double> output) {
     _detections = [];
     
-    // Параметры модели: [1, 8, 2100]
-    final int anchors = 2100;
-    final int numClasses = 3; // 8 - 4 (bbox) - 1 (obj) = 3
-    
     // Дебаг: первые 5 значений уверенности объекта
-    String debug = "Conf[0-4]: ";
+    String debug = "ObjConf[0-4]: ";
     for (int j = 0; j < 5; j++) {
-      debug += "${output[4 * anchors + j].toStringAsFixed(2)} ";
+      debug += "${output[4 * _numAnchors + j].toStringAsFixed(2)} ";
     }
     _detections.add(debug);
 
-    // Проходим по всем 2100 якорям
-    for (int j = 0; j < anchors; j++) {
-      final objConf = output[4 * anchors + j];
+    for (int j = 0; j < _numAnchors; j++) {
+      final objConf = output[4 * _numAnchors + j];
 
       if (objConf > _confThreshold) {
         double maxClassScore = -1.0;
         int maxClassIdx = 0;
 
-        for (int c = 0; c < numClasses; c++) {
-          final classScore = output[(5 + c) * anchors + j];
+        for (int c = 0; c < _numClasses; c++) {
+          final classScore = output[(5 + c) * _numAnchors + j];
           if (classScore > maxClassScore) {
             maxClassScore = classScore;
             maxClassIdx = c;
@@ -195,13 +196,12 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       }
     }
     
-    // Если детекций нет, покажем макс уверенность
     if (_detections.length == 1) {
        double maxConf = 0;
-       for (int j = 0; j < anchors; j++) {
-         if (output[4 * anchors + j] > maxConf) maxConf = output[4 * anchors + j];
+       for (int j = 0; j < _numAnchors; j++) {
+         if (output[4 * _numAnchors + j] > maxConf) maxConf = output[4 * _numAnchors + j];
        }
-       _detections.add("Max Obj Conf: ${maxConf.toStringAsFixed(3)}");
+       _detections.add("Max Obj: ${maxConf.toStringAsFixed(3)}");
     }
   }
 
