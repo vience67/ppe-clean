@@ -156,39 +156,67 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return result;
   }
 
-  void _parseYOLO(List<double> output) {
+    void _parseYOLO(List<double> output) {
     _detections = [];
     
-    // Дебаг
-    String debug = "Out[0-4]: ";
-    for (int i = 0; i < 5 && i < output.length; i++) {
-      debug += "${output[i].toStringAsFixed(2)} ";
+    // Параметры модели: [1, 8, 2100]
+    // 8 = 4 (bbox) + 1 (obj) + 3 (classes)
+    final int anchors = 2100;
+    final int numClasses = 3; // 8 - 4 (coords) - 1 (obj) = 3
+    
+    // Дебаг: первые 5 значений уверенности объекта (индекс 4)
+    String debug = "Conf[0-4]: ";
+    for (int j = 0; j < 5; j++) {
+      debug += "${output[4 * anchors + j].toStringAsFixed(2)} ";
     }
     _detections.add(debug);
-    
-    double maxConf = 0;
-    for (int i = 0; i < 8400; i++) {
-      // Проверка границ массива на случай другой модели
-      if (i * 84 + 4 >= output.length) break; 
-      final conf = output[i * 84 + 4];
-      if (conf > maxConf) maxConf = conf;
-    }
-    _detections.add("Max: ${maxConf.toStringAsFixed(3)}");
-    
-    for (int i = 0; i < 8400; i++) {
-      final conf = output[i * 84 + 4];
-      if (conf > _confThreshold) {
-        int maxCls = 0;
-        double maxVal = -1.0;
-        for (int c = 0; c < _labels.length; c++) {
-           if (i * 84 + 5 + c >= output.length) break;
-           final v = output[i * 84 + 5 + c];
-           if (v > maxVal) { maxVal = v; maxCls = c; }
+
+    // Проходим по всем 2100 якорям
+    for (int j = 0; j < anchors; j++) {
+      // Индекс уверенности объекта (feature #4)
+      // Формула для [1, 8, 2100]: index = feature * anchors + j
+      final objConf = output[4 * anchors + j];
+
+      if (objConf > _confThreshold) {
+        // Ищем лучший класс (features #5, #6, #7)
+        double maxClassScore = -1.0;
+        int maxClassIdx = 0;
+
+        for (int c = 0; c < numClasses; c++) {
+          final classScore = output[(5 + c) * anchors + j];
+          if (classScore > maxClassScore) {
+            maxClassScore = classScore;
+            maxClassIdx = c;
+          }
         }
-        if (maxCls < _labels.length) {
-          _detections.add('${_labels[maxCls]}: ${(conf * 100).toInt()}%');
+
+        final totalScore = objConf * maxClassScore;
+
+        if (totalScore > _confThreshold) {
+          // Координаты (features #0, #1, #2, #3)
+          // Примечание: это сырые координаты, возможно нужно декодирование (sigmoid/softmax),
+          // но для проверки детекции просто выведем их.
+          final x = output[0 * anchors + j];
+          final y = output[1 * anchors + j];
+          final w = output[2 * anchors + j];
+          final h = output[3 * anchors + j];
+
+          final labelName = (maxClassIdx < _labels.length) 
+              ? _labels[maxClassIdx] 
+              : "Class_$maxClassIdx";
+
+          _detections.add('$labelName: ${(totalScore * 100).toInt()}%');
         }
       }
+    }
+    
+    // Если детекций нет, покажем макс уверенность
+    if (_detections.length == 1) { // 1 это только debug строка
+       double maxConf = 0;
+       for (int j = 0; j < anchors; j++) {
+         if (output[4 * anchors + j] > maxConf) maxConf = output[4 * anchors + j];
+       }
+       _detections.add("Max Obj Conf: ${maxConf.toStringAsFixed(3)}");
     }
   }
 
