@@ -1,4 +1,3 @@
 glove
 helmet
-pants
 vest

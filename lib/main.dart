@@ -34,12 +34,12 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   List<String> _labels = [];
   List<String> _detections = [];
   String _status = "Initializing...";
+  String _debugRawOutput = "..."; // 🔑 Для вывода сырых данных
   bool _isReady = false;
   bool _isProcessing = false;
   final int _inputSize = 320;
-  final double _confThreshold = 0.1;
-  
-  // 🔑 Динамические параметры модели
+  final double _confThreshold = 0.05; // 🔑 Снижаем порог до минимума
+
   int _numClasses = 3;
   int _numAnchors = 2100;
 
@@ -51,13 +51,13 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   Future<void> _init() async {
     try {
-      _status = "1. Camera init...";
+      _status = "1. Camera...";
       if (mounted) setState(() {});
 
       _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
       await _controller.initialize();
 
-      _status = "2. Loading model...";
+      _status = "2. Model...";
       if (mounted) setState(() {});
 
       _labels = (await rootBundle.loadString('assets/labels.txt'))
@@ -65,17 +65,11 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
 
-      // 🔍 Читаем форму выхода модели
       final outShape = _interpreter.getOutputTensor(0).shape;
-      // Для [1, 8, 2100]: shape[1]=8 (features), shape[2]=2100 (anchors)
-      _numClasses = outShape[1] - 5; // 8 - 5 = 3
-      _numAnchors = outShape[2];     // 2100
+      _numClasses = outShape[1] - 5; 
+      _numAnchors = outShape[2];
       
-      String modelInfo = "Classes: $_numClasses, Anchors: $_numAnchors\n";
-      if (_labels.length != _numClasses) {
-        modelInfo += "⚠️ Labels(${ _labels.length}) != Model($_numClasses)\n";
-      }
-      _status = modelInfo;
+      _status = "In: ${_interpreter.getInputTensor(0).shape}\nOut: $outShape\nClasses: $_numClasses";
       _isReady = true;
 
       await Future.delayed(const Duration(seconds: 2));
@@ -87,16 +81,14 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           await _controller.startImageStream(_processFrame);
           streamStarted = true;
           break;
-        } catch (e) {
-          await Future.delayed(const Duration(seconds: 1));
-        }
+        } catch (e) { await Future.delayed(const Duration(seconds: 1)); }
       }
       
-      if (streamStarted) _status += "✅ Stream Active";
+      if (streamStarted) _status += "\n✅ Active";
       if (mounted) setState(() {});
 
     } catch (e, st) {
-      _status = "❌ Error: $e";
+      _status = "❌ Init: $e";
       if (mounted) setState(() {});
     }
   }
@@ -105,15 +97,30 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
 
+    // 🔑 Запускаем в фоне, чтобы не блокировать поток камеры
     Future(() {
       try {
         final input = _cameraImageToFloat32(image);
-        final outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
+        
+        // Размер выхода: Batch(1) * Features(8) * Anchors(2100)
+        final int outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
         final output = List.filled(outputSize, 0.0);
+        
         _interpreter.run(input, output);
+        
+        // 🔍 Выводим первые 10 чисел на экран, чтобы понять, жива ли модель
+        String raw = "Raw[0-9]: ";
+        for(int i=0; i<10 && i<output.length; i++) {
+           raw += "${output[i].toStringAsFixed(2)} ";
+        }
+        _debugRawOutput = raw;
+
         _parseYOLO(output);
-      } catch (e) {
-        print("Frame error: $e");
+        
+      } catch (e, st) {
+        // 🔑 Если ошибка, пишем её КРУПНО на экран
+        _status = "❌ CRASH: $e";
+        _debugRawOutput = st.toString().substring(0, 100);
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
@@ -160,24 +167,29 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   }
 
   void _parseYOLO(List<double> output) {
-    _detections = [];
+    List<String> newDetections = [];
     
-    // Дебаг: первые 5 значений уверенности объекта
-    String debug = "ObjConf[0-4]: ";
+    // Дебаг уверенности
+    String confDebug = "ObjConf[0-4]: ";
     for (int j = 0; j < 5; j++) {
-      debug += "${output[4 * _numAnchors + j].toStringAsFixed(2)} ";
+       // Feature 4 — уверенность объекта. Индекс: 4 * 2100 + j
+       confDebug += "${output[4 * _numAnchors + j].toStringAsFixed(2)} ";
     }
-    _detections.add(debug);
+    newDetections.add(confDebug);
+
+    double maxConf = 0;
 
     for (int j = 0; j < _numAnchors; j++) {
-      final objConf = output[4 * _numAnchors + j];
+      final objConf = output[4 * _numAnchors + j]; // Feature 4
+
+      if (objConf > maxConf) maxConf = objConf;
 
       if (objConf > _confThreshold) {
         double maxClassScore = -1.0;
         int maxClassIdx = 0;
 
         for (int c = 0; c < _numClasses; c++) {
-          final classScore = output[(5 + c) * _numAnchors + j];
+          final classScore = output[(5 + c) * _numAnchors + j]; // Feature 5, 6, 7...
           if (classScore > maxClassScore) {
             maxClassScore = classScore;
             maxClassIdx = c;
@@ -185,24 +197,17 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         }
 
         final totalScore = objConf * maxClassScore;
-
         if (totalScore > _confThreshold) {
-          final labelName = (maxClassIdx < _labels.length) 
-              ? _labels[maxClassIdx] 
-              : "Class_$maxClassIdx";
-
-          _detections.add('$labelName: ${(totalScore * 100).toInt()}%');
+           final labelName = (maxClassIdx < _labels.length) ? _labels[maxClassIdx] : "C$maxClassIdx";
+           newDetections.add('$labelName: ${(totalScore * 100).toInt()}%');
         }
       }
     }
     
-    if (_detections.length == 1) {
-       double maxConf = 0;
-       for (int j = 0; j < _numAnchors; j++) {
-         if (output[4 * _numAnchors + j] > maxConf) maxConf = output[4 * _numAnchors + j];
-       }
-       _detections.add("Max Obj: ${maxConf.toStringAsFixed(3)}");
-    }
+    newDetections.add("Max ObjConf: ${maxConf.toStringAsFixed(3)}");
+
+    // Обновляем глобальный список
+    _detections = newDetections;
   }
 
   @override
@@ -215,17 +220,28 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return Scaffold(
       body: Stack(children: [
         CameraPreview(_controller),
+        
+        // 🔴 СТАТУС СВЕРХУ
         Positioned(top: 50, left: 10, right: 10,
           child: Container(padding: EdgeInsets.all(6), color: Colors.black54,
-            child: Text(_status, style: TextStyle(color: Colors.yellowAccent, fontSize: 14, fontWeight: FontWeight.bold)),
+            child: Text(_status, style: TextStyle(color: Colors.yellowAccent, fontSize: 12, fontWeight: FontWeight.bold)),
           ),
         ),
+
+        // 🔵 СЫРЫЕ ДАННЫЕ (СЕРЕДИНА)
+        Positioned(top: 120, left: 10, right: 10,
+          child: Container(padding: EdgeInsets.all(6), color: Colors.blueAccent.withOpacity(0.7),
+            child: Text(_debugRawOutput, style: TextStyle(color: Colors.white, fontSize: 12, fontFamily: 'monospace')),
+          ),
+        ),
+
+        // 🟢 ДЕТЕКЦИИ (СНИЗУ)
         Positioned(bottom: 20, left: 10, right: 10,
           child: Container(padding: EdgeInsets.all(10), color: Colors.black87,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min,
               children: _detections.map((t) => Padding(
                 padding: EdgeInsets.only(bottom: 2),
-                child: Text(t, style: TextStyle(color: Colors.white, fontSize: 13, fontFamily: 'monospace'))
+                child: Text(t, style: TextStyle(color: Colors.greenAccent, fontSize: 14, fontFamily: 'monospace', fontWeight: FontWeight.bold))
               )).toList(),
             ),
           ),
