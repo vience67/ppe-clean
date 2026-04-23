@@ -45,7 +45,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     _init();
   }
 
-    Future<void> _init() async {
+  Future<void> _init() async {
     try {
       _status = "1. Camera init...";
       if (mounted) setState(() {});
@@ -61,14 +61,14 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
 
-      // 🔍 ЧИТАЕМ ПАСПОРТ МОДЕЛИ
+      // 🔍 Читаем инфо о модели
       final inputTensor = _interpreter.getInputTensor(0);
       final outputTensor = _interpreter.getOutputTensor(0);
       
       String modelInfo = "In: ${inputTensor.shape}, Type: ${inputTensor.type}\n";
       modelInfo += "Out: ${outputTensor.shape}, Type: ${outputTensor.type}";
       
-      _status = modelInfo; // <-- Показываем инфо на экране
+      _status = modelInfo;
       _isReady = true;
 
       await Future.delayed(const Duration(seconds: 2));
@@ -99,20 +99,17 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _processFrame(CameraImage image) {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
-    // Не обновляем UI статус здесь слишком часто, чтобы не лагало
 
     Future(() {
       try {
         final input = _cameraImageToFloat32(image);
-        final output = List.filled(1 * 84 * 8400, 0.0);
+        final output = List.filled(1 * 8 * 2100, 0.0);
         _interpreter.run(input, output);
         _parseYOLO(output);
       } catch (e, st) {
-        // Ошибки обработки кадра не должны крашить приложение
         print("Frame error: $e");
       } finally {
         _isProcessing = false;
-        // Обновляем UI раз в N кадров или просто setState (Flutter оптимизирует)
         if (mounted) setState(() {});
       }
     });
@@ -156,15 +153,14 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return result;
   }
 
-    void _parseYOLO(List<double> output) {
+  void _parseYOLO(List<double> output) {
     _detections = [];
     
     // Параметры модели: [1, 8, 2100]
-    // 8 = 4 (bbox) + 1 (obj) + 3 (classes)
     final int anchors = 2100;
-    final int numClasses = 3; // 8 - 4 (coords) - 1 (obj) = 3
+    final int numClasses = 3; // 8 - 4 (bbox) - 1 (obj) = 3
     
-    // Дебаг: первые 5 значений уверенности объекта (индекс 4)
+    // Дебаг: первые 5 значений уверенности объекта
     String debug = "Conf[0-4]: ";
     for (int j = 0; j < 5; j++) {
       debug += "${output[4 * anchors + j].toStringAsFixed(2)} ";
@@ -173,12 +169,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
     // Проходим по всем 2100 якорям
     for (int j = 0; j < anchors; j++) {
-      // Индекс уверенности объекта (feature #4)
-      // Формула для [1, 8, 2100]: index = feature * anchors + j
       final objConf = output[4 * anchors + j];
 
       if (objConf > _confThreshold) {
-        // Ищем лучший класс (features #5, #6, #7)
         double maxClassScore = -1.0;
         int maxClassIdx = 0;
 
@@ -193,14 +186,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         final totalScore = objConf * maxClassScore;
 
         if (totalScore > _confThreshold) {
-          // Координаты (features #0, #1, #2, #3)
-          // Примечание: это сырые координаты, возможно нужно декодирование (sigmoid/softmax),
-          // но для проверки детекции просто выведем их.
-          final x = output[0 * anchors + j];
-          final y = output[1 * anchors + j];
-          final w = output[2 * anchors + j];
-          final h = output[3 * anchors + j];
-
           final labelName = (maxClassIdx < _labels.length) 
               ? _labels[maxClassIdx] 
               : "Class_$maxClassIdx";
@@ -211,7 +196,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     }
     
     // Если детекций нет, покажем макс уверенность
-    if (_detections.length == 1) { // 1 это только debug строка
+    if (_detections.length == 1) {
        double maxConf = 0;
        for (int j = 0; j < anchors; j++) {
          if (output[4 * anchors + j] > maxConf) maxConf = output[4 * anchors + j];
