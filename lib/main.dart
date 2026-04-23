@@ -40,9 +40,10 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   final int _inputSize = 320;
   final double _confThreshold = 0.1;
 
+  // Параметры модели
   int _numClasses = 3;
   int _numAnchors = 2100;
-  bool _outputTransposed = true;
+  bool _outputTransposed = true; // [1, 8, 2100]
   int _inputTensorSize = 0;
 
   @override
@@ -56,28 +57,33 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       _status = "1. Camera...";
       if (mounted) setState(() {});
 
+      // Инициализация камеры
       _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
       await _controller.initialize();
 
       _status = "2. Model...";
       if (mounted) setState(() {});
 
+      // Загрузка меток
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
 
+      // Загрузка модели
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
 
-      // 🔍 Читаем входной тензор
+      // Читаем входной тензор
       final inputTensor = _interpreter.getInputTensor(0);
       final inputShape = inputTensor.shape;
       
+      // Считаем размер входа
       _inputTensorSize = 1;
       for (int dim in inputShape) {
         _inputTensorSize *= dim;
       }
 
-      // Читаем выход
+      // Читаем форму выхода
       final outShape = _interpreter.getOutputTensor(0).shape;
+      // Если [1, 8, 2100], то transposed = true
       if (outShape.length == 3 && outShape[1] < outShape[2]) {
         _outputTransposed = true;
         _numClasses = outShape[1] - 5;
@@ -88,17 +94,18 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
 
-      // 🔥 Явно выделяем память ОДИН РАЗ
-      _interpreter.allocateTensors();
-      
+      // 🔥 НЕ ВЫЗЫВАЕМ allocateTensors() ЗДЕСЬ!
+      // Пусть run() сделает это сам при первом запуске.
+
       _debugInfo = "In: $inputShape (size: $_inputTensorSize)\n";
       _debugInfo += "Out: $outShape\nClasses: $_numClasses, Anchors: $_numAnchors";
-      _status = "Model OK\nAllocated";
+      _status = "Model OK";
       _isReady = true;
 
       await Future.delayed(const Duration(seconds: 2));
       if (mounted) setState(() {});
 
+      // Запуск потока камеры
       bool started = false;
       for (int i = 0; i < 3; i++) {
         try {
@@ -110,7 +117,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         }
       }
       if (started && mounted) {
-        _status += "\n✅ Active";
+        _status += "\n✅ Stream Active";
         setState(() {});
       }
 
@@ -134,6 +141,8 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         }
         
         final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
+        
+        // 🔥 run() сам вызовет allocateTensors при необходимости
         _interpreter.run(input, output);
         _parseYOLO(output);
         
@@ -147,6 +156,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     });
   }
 
+  // Конвертация кадра в Float32List
   Float32List _cameraImageToFloat32(CameraImage image) {
     final int target = _inputSize;
     final Float32List result = Float32List(target * target * 3);
@@ -169,9 +179,13 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         final int yVal = y[yOff + sx];
         final int uVal = u[uvIdx];
         final int vVal = v[uvIdx];
+        
+        // YUV to RGB
         int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
         int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).round().clamp(0, 255);
         int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
+        
+        // Нормализация [0, 1]
         result[idx++] = r / 255.0;
         result[idx++] = g / 255.0;
         result[idx++] = b / 255.0;
@@ -180,6 +194,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return result;
   }
 
+  // Парсинг вывода YOLOv5 (транспонированный)
   void _parseYOLO(List<double> output) {
     List<String> newDetections = [];
     
@@ -192,6 +207,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     double maxConf = 0;
 
     for (int j = 0; j < _numAnchors; j++) {
+      // Индекс уверенности объекта (feature #4)
       final int objIdx = _outputTransposed 
           ? 4 * _numAnchors + j 
           : j * (4 + 1 + _numClasses) + 4;
