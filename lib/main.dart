@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'dart:typed_data';
+import 'dart:async';
 import 'package:flutter/services.dart';
 
 late List<CameraDescription> cameras;
@@ -42,6 +43,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
   int _numClasses = 3;
   int _numAnchors = 2100;
+  
+  // 🔑 Блокировка для предотвращения параллельных вызовов
+  final Completer<void> _lock = Completer<void>()..complete();
 
   @override
   void initState() {
@@ -63,12 +67,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       _labels = (await rootBundle.loadString('assets/labels.txt'))
           .split('\n').where((s) => s.trim().isNotEmpty).toList();
       
-      // Загружаем модель
+      // Загружаем модель БЕЗ allocateTensors
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
       
-      // 🔧 ВАЖНО: Вызываем allocateTensors ОДИН РАЗ здесь
-      _interpreter.allocateTensors();
-
       final outShape = _interpreter.getOutputTensor(0).shape;
       _numClasses = outShape[1] - 5; 
       _numAnchors = outShape[2];
@@ -101,20 +102,20 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
 
-    Future(() {
+    // 🔑 Асинхронная обработка с блокировкой
+    Future(() async {
       try {
+        // Ждем, пока предыдущий кадр обработается
+        await _lock;
+        _lock.complete(); // Сбрасываем блокировку для следующего кадра
+        
         final input = _cameraImageToFloat32(image);
-        
-        // Размер выхода: Batch(1) * Features(8) * Anchors(2100)
         final int outputSize = 1 * (4 + 1 + _numClasses) * _numAnchors;
-        
-        // 🔧 Используем Float32List для выхода
         final output = Float32List(outputSize);
         
-        // 🔧 ЗАПУСКАЕМ ИНФЕРЕНС (без allocateTensors!)
+        // 🔥 ЗАПУСК БЕЗ allocateTensors
         _interpreter.run(input, output);
         
-        // Выводим первые 10 чисел
         String raw = "Raw[0-9]: ";
         for(int i=0; i<10 && i<output.length; i++) {
            raw += "${output[i].toStringAsFixed(2)} ";
