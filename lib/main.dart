@@ -33,7 +33,8 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   List<String> _detections = [];
   bool _isReady = false, _isProcessing = false;
   final int _inputSize = 320;
-  final double _confThreshold = 0.1;
+  final double _confThreshold = 0.5;
+  String _status = "Loading..."; // 👈 СЮДА, с таким же отступом (2 пробела)
 
   @override
   void initState() { super.initState(); _init(); }
@@ -59,21 +60,33 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     }
   }
 
-  void _processFrame(CameraImage image) {
+    void _processFrame(CameraImage image) {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
-    Future.delayed(const Duration(milliseconds: 200), () => _isProcessing = false);
+    _status = "🔄 Обработка...";
 
-    // ❌ УБРАЛИ try/catch, чтобы видеть ошибки в консоли
-    final buf = _yuv420ToUint8(image);
-    final decoded = img.decodeImage(buf)!;
-    final resized = img.copyResize(decoded, width: _inputSize, height: _inputSize, interpolation: img.Interpolation.nearest);
-    final input = _imageToFloat32(resized);
-    
-    final output = List.filled(1 * 84 * 8400, 0.0);
-    _interpreter.run(input, output);
-    _parseYOLO(output);
-    if (mounted) setState(() {});
+    Future(() {
+      try {
+        final buf = _yuv420ToUint8(image);
+        final decoded = img.decodeImage(buf);
+        if (decoded == null) throw Exception("decodeImage вернул null");
+
+        final resized = img.copyResize(decoded, width: _inputSize, height: _inputSize, interpolation: img.Interpolation.nearest);
+        final input = _imageToFloat32(resized);
+
+        final output = List.filled(1 * 84 * 8400, 0.0);
+        _interpreter.run(input, output);
+        
+        _parseYOLO(output);
+        _status = "✅ OK";
+      } catch (e, st) {
+        _detections = ["❌ ОШИБКА: $e", "📍 ${st.toString().split('\n').first}"];
+        _status = "⛔ Crash";
+      } finally {
+        _isProcessing = false;
+        if (mounted) setState(() {});
+      }
+    });
   }
 
   Uint8List _yuv420ToUint8(CameraImage image) {
@@ -141,8 +154,13 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     return Scaffold(
       body: Stack(children: [
         CameraPreview(_controller),
+        // 👇 ДОБАВЬ ЭТО:
+        Positioned(top: 40, left: 10, right: 10,
+          child: Text(_status, style: const TextStyle(color: Colors.yellow, fontSize: 18, fontWeight: FontWeight.bold)),
+        ),
+        // 👇 Существующий блок с детекциями:
         Positioned(bottom: 20, left: 10, right: 10,
-          child: Container(padding: const EdgeInsets.all(8), color: Colors.black54,
+          child: Container(padding: const EdgeInsets.all(8), color: Colors.black87,
             child: Column(crossAxisAlignment: CrossAxisAlignment.start,
               children: _detections.map((t) => Text(t, style: const TextStyle(color: Colors.white, fontSize: 16))).toList()),
           ),
