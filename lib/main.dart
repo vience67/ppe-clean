@@ -41,7 +41,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   final double _confThreshold = 0.1;
 
   // Параметры модели
-  int _numClasses = 3;
+  int _numClasses = 14;
   int _numAnchors = 2100;
   bool _outputTransposed = true;
   int _inputTensorSize = 0;

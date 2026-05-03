@@ -1,3 +1,14 @@
-glove
+person
+gloves
+head
+hardhat
+mask
+eyewear
+face_shield
 helmet
-vest
+coverall
+ear_plug
+glasses
+goggles
+respirator
+safety_vest
