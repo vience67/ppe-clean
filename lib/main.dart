@@ -42,7 +42,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   final int _inputSize = 320;
   final double _confThreshold = 0.1;
   
-  // Параметры модели
   int _numClasses = 80;
   int _numAnchors = 2100;
   bool _outputTransposed = true;
@@ -137,7 +136,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     
     Future(() {
       try {
-        // 🔥 НЕ вызываем allocateTensors()! TFLite сама при первом run()
+        // 🔥 НЕ вызываем allocateTensors()! TFLite сама при run()
         
         final input = _cameraImageToFloat32(image);
         
@@ -147,7 +146,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         
         final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
         
-        // Первый run() автоматически вызовет allocateTensors() внутри
+        // Первый run() автоматически вызовет allocateTensors()
         _interpreter.run(input, output);
         
         _parseYOLO(output);
