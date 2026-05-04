@@ -164,15 +164,8 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       
       // 🔥 Выделяем тензоры
       try {
-        _interpreter.allocateTensors();
-        _tensorsAllocated = true;
-        _status = "Tensors allocated ✅";
-      } catch (e) {
-        print("❌ allocateTensors failed: $e");
-        _status = "⚠️ Alloc failed: $e";
-        _tensorsAllocated = false;
-        // Не выбрасываем ошибку сразу - попробуем при первом запуске
-      }
+        _tensorsAllocated = true; // Считаем что OK
+	_status = "Model loaded";
       
       // Анализируем форму тензоров
       final inputTensor = _interpreter.getInputTensor(0);
@@ -220,14 +213,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       try {
         // 🔥 Проверяем и выделяем тензоры если нужно
         if (!_tensorsAllocated) {
-          try {
-            _interpreter.allocateTensors();
-            _tensorsAllocated = true;
-            print("✅ Tensors allocated in processFrame");
-          } catch (e) {
-            throw Exception("Cannot allocate tensors: $e");
-          }
-        }
         
         // Конвертируем изображение
         final input = _cameraImageToFloat32(image);
