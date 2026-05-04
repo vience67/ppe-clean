@@ -43,7 +43,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   final double _confThreshold = 0.1;
   
   // Параметры модели
-  int _numClasses = 79; // 84 - 5 = 79 (YOLOv8)
+  int _numClasses = 80;
   int _numAnchors = 2100;
   bool _outputTransposed = true;
   int _inputTensorSize = 0;
@@ -96,7 +96,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
       
-      // 🔥 НЕ вызываем allocateTensors() - TFLite сделает это сама!
+      // 🔥 НЕ вызываем allocateTensors()!
       _status = "Model loaded";
       
       _debugInfo = "In: $inputShape (size: $_inputTensorSize)\n";
@@ -137,7 +137,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     
     Future(() {
       try {
-        // 🔥 НЕ вызываем allocateTensors() - TFLite сама выделит память при run()
+        // 🔥 НЕ вызываем allocateTensors()! TFLite сама при первом run()
         
         final input = _cameraImageToFloat32(image);
         
@@ -147,7 +147,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         
         final output = Float32List(1 * (4 + 1 + _numClasses) * _numAnchors);
         
-        // 🔥 Первый run() автоматически вызовет allocateTensors()
+        // Первый run() автоматически вызовет allocateTensors() внутри
         _interpreter.run(input, output);
         
         _parseYOLO(output);
