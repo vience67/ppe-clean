@@ -135,9 +135,9 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         final yVal = y[yOff + sx];
         final uVal = u[uvIdx];
         final vVal = v[uvIdx];
-        int r = (yVal + 1.370705 * (vVal - 128)).clamp(0, 255);
-        int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).clamp(0, 255);
-        int b = (yVal + 1.732446 * (uVal - 128)).clamp(0, 255);
+        int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
+        int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).round().clamp(0, 255);
+        int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
         result[idx++] = r / 255.0;
         result[idx++] = g / 255.0;
         result[idx++] = b / 255.0;
