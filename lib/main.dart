@@ -145,7 +145,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           if (mounted) setState(() {});
           
           final options = InterpreterOptions();
-          options.setNumThreads(4);
           tempInterpreter = await Interpreter.fromAsset(
             'assets/best.tflite',
             options: options,
