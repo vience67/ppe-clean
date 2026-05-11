@@ -94,7 +94,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
       
-      // 🔥 УБРАЛ allocateTensors()!
+      // 🔥 УБРАЛ allocateTensors()! TFLite сама выделит память
       _status = "Model loaded";
       
       _debugInfo = "In: $inputShape (size: $_inputTensorSize)\n";
@@ -135,7 +135,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     
     Future(() {
       try {
-        // 🔥 УБРАЛ allocateTensors()! TFLite сама при run()
+        // 🔥 НЕ вызываем allocateTensors()! TFLite сама при run()
         
         final input = _cameraImageToFloat32(image);
         
