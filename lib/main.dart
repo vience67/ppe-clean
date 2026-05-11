@@ -73,7 +73,6 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           .where((s) => s.trim().isNotEmpty)
           .toList();
       
-      // Загружаем модель
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
       
       final inputTensor = _interpreter.getInputTensor(0);
@@ -95,7 +94,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         _numClasses = outShape[2] - 5;
       }
       
-      // 🔥 НЕ вызываем allocateTensors()!
+      // 🔥 УБРАЛ allocateTensors()!
       _status = "Model loaded";
       
       _debugInfo = "In: $inputShape (size: $_inputTensorSize)\n";
@@ -136,7 +135,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     
     Future(() {
       try {
-        // 🔥 НЕ вызываем allocateTensors()! TFLite сама при run()
+        // 🔥 УБРАЛ allocateTensors()! TFLite сама при run()
         
         final input = _cameraImageToFloat32(image);
         
