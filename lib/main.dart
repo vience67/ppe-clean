@@ -14,16 +14,18 @@ Future<void> main() async {
 
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
+
   @override
   Widget build(BuildContext context) => MaterialApp(
-    title: 'PPE Detector',
-    theme: ThemeData.dark(),
-    home: const PPECameraScreen(),
-  );
+        title: 'PPE Detector',
+        theme: ThemeData.dark(),
+        home: const PPECameraScreen(),
+      );
 }
 
 class PPECameraScreen extends StatefulWidget {
   const PPECameraScreen({super.key});
+
   @override
   State<PPECameraScreen> createState() => _PPECameraScreenState();
 }
@@ -37,13 +39,15 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   String _debugInfo = "";
   bool _isReady = false;
   bool _isProcessing = false;
+  
   final int _inputSize = 320;
   final double _confThreshold = 0.25;
   
-  int _numClasses = 80;
+  // Параметры модели
+  int _numClasses = 80;  // YOLOv8: 80 классов
   int _numAnchors = 2100;
-  bool _outputTransposed = true;
   int _inputTensorSize = 0;
+  bool _isYOLOv8 = false;  // Флаг формата модели
 
   @override
   void initState() {
@@ -55,42 +59,63 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     try {
       _status = "1. Camera...";
       if (mounted) setState(() {});
-      
-      _controller = CameraController(cameras[0], ResolutionPreset.medium, enableAudio: false);
+
+      _controller = CameraController(
+        cameras[0],
+        ResolutionPreset.medium,
+        enableAudio: false,
+      );
       await _controller.initialize();
-      
+
       _status = "2. Model...";
       if (mounted) setState(() {});
-      
+
       _labels = (await rootBundle.loadString('assets/labels.txt'))
-          .split('\n').where((s) => s.trim().isNotEmpty).toList();
-      
-      // Простая загрузка без опций
+          .split('\n')
+          .where((s) => s.trim().isNotEmpty)
+          .toList();
+
       _interpreter = await Interpreter.fromAsset('assets/best.tflite');
-      
+
       final inputTensor = _interpreter.getInputTensor(0);
       final inputShape = inputTensor.shape;
       _inputTensorSize = 1;
-      for (int dim in inputShape) _inputTensorSize *= dim;
-      
-      final outShape = _interpreter.getOutputTensor(0).shape;
-      if (outShape.length == 3 && outShape[1] < outShape[2]) {
-        _outputTransposed = true;
-        _numClasses = outShape[1] - 5;
-        _numAnchors = outShape[2];
-      } else {
-        _outputTransposed = false;
-        _numAnchors = outShape[1];
-        _numClasses = outShape[2] - 5;
+      for (int dim in inputShape) {
+        _inputTensorSize *= dim;
       }
-      
-      _status = "Model loaded";
+
+      final outShape = _interpreter.getOutputTensor(0).shape;
+
+      // 🔥 Определяем формат модели
+      if (outShape.length == 3) {
+        if (outShape[1] == 84 && outShape[2] == 2100) {
+          // YOLOv8: [1, 84, 2100] -> 84 = 4 + 80
+          _isYOLOv8 = true;
+          _numClasses = 80;
+          _numAnchors = 2100;
+          _status = "YOLOv8 Model";
+        } else if (outShape[1] < outShape[2]) {
+          // YOLOv5 transposed: [1, 85, 2100] -> 85 = 4 + 1 + 80
+          _isYOLOv8 = false;
+          _numClasses = outShape[1] - 5;
+          _numAnchors = outShape[2];
+          _status = "YOLOv5 Model";
+        } else {
+          // YOLOv5 normal: [1, 2100, 85]
+          _isYOLOv8 = false;
+          _numAnchors = outShape[1];
+          _numClasses = outShape[2] - 5;
+          _status = "YOLOv5 Model";
+        }
+      }
+
       _debugInfo = "In: $inputShape\nOut: $outShape\nClasses: $_numClasses";
-      
+
       _isReady = true;
       await Future.delayed(const Duration(seconds: 1));
+
       if (mounted) setState(() {});
-      
+
       bool started = false;
       for (int i = 0; i < 3; i++) {
         try {
@@ -101,7 +126,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           await Future.delayed(const Duration(seconds: 1));
         }
       }
-      
+
       if (started && mounted) {
         _status += "\n✅ Active";
         setState(() {});
@@ -116,23 +141,28 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   void _processFrame(CameraImage image) {
     if (!_isReady || _isProcessing) return;
     _isProcessing = true;
-    
+
     Future(() {
       try {
         final input = _cameraImageToFloat32(image);
-        if (input.length != _inputTensorSize) return;
+
+        if (input.length != _inputTensorSize) {
+          throw Exception("Size: ${input.length} != $_inputTensorSize");
+        }
+
+        // Создаем output под точный размер тензора
+        final outputTensor = _interpreter.getOutputTensor(0);
+        int outputSize = 1;
+        for (var dim in outputTensor.shape) outputSize *= dim;
         
-        // Берем точный размер из модели
-        final outTensor = _interpreter.getOutputTensor(0);
-        int outSize = 1;
-        for (var d in outTensor.shape) outSize *= d;
-        final output = Float32List(outSize);
-        
-        // Запуск — TFLite сама выделит память
+        final output = Float32List(outputSize);
+
         _interpreter.run(input, output);
+
         _parseYOLO(output);
-      } catch (e) {
+      } catch (e, st) {
         _status = "❌ Run: $e";
+        _debugInfo = st.toString().substring(0, 150);
       } finally {
         _isProcessing = false;
         if (mounted) setState(() {});
@@ -143,70 +173,203 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
   Float32List _cameraImageToFloat32(CameraImage image) {
     final int target = _inputSize;
     final Float32List result = Float32List(target * target * 3);
-    if (image.planes.isEmpty) return result;
     
+    if (image.planes.isEmpty) return result;
+
     final int yRow = image.planes[0].bytesPerRow;
     final int uvRow = image.planes[1].bytesPerRow;
     final int uvPixel = uvRow ~/ (image.width ~/ 2);
+    
     final Uint8List y = image.planes[0].bytes;
     final Uint8List u = image.planes[1].bytes;
     final Uint8List v = image.planes[2].bytes;
     
     int idx = 0;
+    
     for (int ty = 0; ty < target; ty++) {
       final int sy = (ty * image.height / target).floor();
       final int yOff = sy * yRow;
       final int uvOff = (sy ~/ 2) * uvRow;
+      
       for (int tx = 0; tx < target; tx++) {
         final int sx = (tx * image.width / target).floor();
         final int uvIdx = uvOff + (sx ~/ 2) * uvPixel;
+        
         final int yVal = y[yOff + sx];
         final int uVal = u[uvIdx];
         final int vVal = v[uvIdx];
+        
         int r = (yVal + 1.370705 * (vVal - 128)).round().clamp(0, 255);
         int g = (yVal - 0.698001 * (uVal - 128) - 0.337633 * (vVal - 128)).round().clamp(0, 255);
         int b = (yVal + 1.732446 * (uVal - 128)).round().clamp(0, 255);
+        
         result[idx++] = r / 255.0;
         result[idx++] = g / 255.0;
         result[idx++] = b / 255.0;
       }
     }
+    
     return result;
   }
 
   void _parseYOLO(List<double> output) {
     List<String> newDetections = [];
+    
     if (output.isNotEmpty) {
       newDetections.add("Out[0]: ${output[0].toStringAsFixed(2)}");
-      newDetections.add("Max: ${output.reduce((a,b)=>a>b?a:b).toStringAsFixed(2)}");
     }
+
+    if (_isYOLOv8) {
+      // 🔥 YOLOv8 формат: [x, y, w, h, class_scores...]
+      // Для каждого anchor: 4 bbox + 80 классов (НЕТ objectness!)
+      for (int j = 0; j < _numAnchors; j++) {
+        // Находим максимальный класс
+        double maxClassScore = -1.0;
+        int maxClassIdx = 0;
+        
+        for (int c = 0; c < _numClasses; c++) {
+          // YOLOv8: [4, 80] для каждого anchor
+          int classIdx = c * _numAnchors + j + 4 * _numAnchors;
+          
+          if (classIdx >= output.length) continue;
+          
+          double classScore = output[classIdx];
+          if (classScore > maxClassScore) {
+            maxClassScore = classScore;
+            maxClassIdx = c;
+          }
+        }
+        
+        if (maxClassScore > _confThreshold) {
+          final labelName = (maxClassIdx < _labels.length)
+              ? _labels[maxClassIdx]
+              : "C$maxClassIdx";
+          newDetections.add('$labelName: ${(maxClassScore * 100).toInt()}%');
+        }
+      }
+    } else {
+      // YOLOv5 формат: [x, y, w, h, obj_conf, class_scores...]
+      for (int j = 0; j < _numAnchors; j++) {
+        final int objIdx = j * (4 + 1 + _numClasses) + 4;
+        
+        if (objIdx >= output.length) continue;
+        
+        final objConf = output[objIdx];
+        
+        if (objConf > _confThreshold) {
+          double maxClassScore = -1.0;
+          int maxClassIdx = 0;
+          
+          for (int c = 0; c < _numClasses; c++) {
+            final int classIdx = j * (4 + 1 + _numClasses) + 5 + c;
+            
+            if (classIdx >= output.length) continue;
+            
+            final classScore = output[classIdx];
+            if (classScore > maxClassScore) {
+              maxClassScore = classScore;
+              maxClassIdx = c;
+            }
+          }
+          
+          final totalScore = objConf * maxClassScore;
+          
+          if (totalScore > _confThreshold) {
+            final labelName = (maxClassIdx < _labels.length)
+                ? _labels[maxClassIdx]
+                : "C$maxClassIdx";
+            newDetections.add('$labelName: ${(totalScore * 100).toInt()}%');
+          }
+        }
+      }
+    }
+    
     _detections = newDetections;
   }
 
   @override
   Widget build(BuildContext context) {
     if (_controller == null || !_controller.value.isInitialized) {
-      return Scaffold(body: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        CircularProgressIndicator(), SizedBox(height: 16), Text(_status)
-      ])));
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(_status),
+            ],
+          ),
+        ),
+      );
     }
+    
     return Scaffold(
-      body: Stack(children: [
-        CameraPreview(_controller),
-        Positioned(top: 40, left: 10, right: 10,
-          child: Container(padding: EdgeInsets.all(6), color: Colors.black54,
-            child: Text(_status, style: TextStyle(color: Colors.yellow, fontSize: 11)))),
-        Positioned(top: 100, left: 10, right: 10,
-          child: Container(padding: EdgeInsets.all(6), color: Colors.blue[900],
-            child: Text(_debugInfo, style: TextStyle(color: Colors.white, fontSize: 10, fontFamily: 'monospace')))),
-        Positioned(bottom: 20, left: 10, right: 10,
-          child: Container(padding: EdgeInsets.all(10), color: Colors.black87,
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min,
-              children: _detections.map((t) => Padding(
-                padding: EdgeInsets.only(bottom: 2),
-                child: Text(t, style: TextStyle(color: Colors.greenAccent, fontSize: 14, fontWeight: FontWeight.bold))
-              )).toList()))),
-      ]),
+      body: Stack(
+        children: [
+          CameraPreview(_controller),
+          
+          Positioned(
+            top: 40,
+            left: 10,
+            right: 10,
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              color: Colors.black54,
+              child: Text(
+                _status,
+                style: const TextStyle(
+                  color: Colors.yellow,
+                  fontSize: 11,
+                ),
+              ),
+            ),
+          ),
+          
+          Positioned(
+            top: 100,
+            left: 10,
+            right: 10,
+            child: Container(
+              padding: const EdgeInsets.all(6),
+              color: Colors.blue[900],
+              child: Text(
+                _debugInfo,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          ),
+          
+          Positioned(
+            bottom: 20,
+            left: 10,
+            right: 10,
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              color: Colors.black87,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: _detections.map((t) => Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    t,
+                    style: const TextStyle(
+                      color: Colors.greenAccent,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                )).toList(),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
