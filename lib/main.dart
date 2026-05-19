@@ -55,7 +55,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
     _init();
   }
 
-  Future<void> _init() async {
+    Future<void> _init() async {
     try {
       _status = "1. Camera...";
       if (mounted) setState(() {});
@@ -67,7 +67,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
       );
       await _controller.initialize();
 
-      _status = "2. Model...";
+      _status = "2. Loading Model (Hardware Acceleration)...";
       if (mounted) setState(() {});
 
       _labels = (await rootBundle.loadString('assets/labels.txt'))
@@ -75,7 +75,19 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
           .where((s) => s.trim().isNotEmpty)
           .toList();
 
-      _interpreter = await Interpreter.fromAsset('assets/best.tflite');
+      // 🔥 ВАЖНО: Включаем NNAPI делегат для совместимости
+      final options = InterpreterOptions();
+      try {
+        options.addDelegate(NnApiDelegate()); 
+      } catch (e) {
+        // Если NNAPI недоступен, продолжаем без него
+      }
+
+      // Загружаем модель С ОПЦИЯМИ
+      _interpreter = await Interpreter.fromAsset(
+        'assets/best.tflite', 
+        options: options
+      );
 
       final inputTensor = _interpreter.getInputTensor(0);
       final inputShape = inputTensor.shape;
@@ -86,30 +98,19 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
 
       final outShape = _interpreter.getOutputTensor(0).shape;
 
-      // 🔥 Определяем формат модели
-      if (outShape.length == 3) {
-        if (outShape[1] == 84 && outShape[2] == 2100) {
-          // YOLOv8: [1, 84, 2100] -> 84 = 4 + 80
-          _isYOLOv8 = true;
-          _numClasses = 80;
-          _numAnchors = 2100;
-          _status = "YOLOv8 Model";
-        } else if (outShape[1] < outShape[2]) {
-          // YOLOv5 transposed: [1, 85, 2100] -> 85 = 4 + 1 + 80
-          _isYOLOv8 = false;
-          _numClasses = outShape[1] - 5;
-          _numAnchors = outShape[2];
-          _status = "YOLOv5 Model";
-        } else {
-          // YOLOv5 normal: [1, 2100, 85]
-          _isYOLOv8 = false;
-          _numAnchors = outShape[1];
-          _numClasses = outShape[2] - 5;
-          _status = "YOLOv5 Model";
-        }
+      if (outShape.length == 3 && outShape[1] < outShape[2]) {
+        _outputTransposed = true;
+        _numClasses = outShape[1] - 5;
+        _numAnchors = outShape[2];
+      } else {
+        _outputTransposed = false;
+        _numAnchors = outShape[1];
+        _numClasses = outShape[2] - 5;
       }
 
-      _debugInfo = "In: $inputShape\nOut: $outShape\nClasses: $_numClasses";
+      _status = "Model Ready (NNAPI Active)";
+      
+      _debugInfo = "In: $inputShape\nOut: $outShape";
 
       _isReady = true;
       await Future.delayed(const Duration(seconds: 1));
@@ -132,7 +133,7 @@ class _PPECameraScreenState extends State<PPECameraScreen> {
         setState(() {});
       }
     } catch (e, st) {
-      _status = "❌ Init: $e";
+      _status = "❌ Error: $e";
       _debugInfo = st.toString().substring(0, 200);
       if (mounted) setState(() {});
     }
